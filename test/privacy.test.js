@@ -133,8 +133,25 @@ test("a trailing trigger below the swap round-trip is flagged", () => {
   assert.match(warn[0].text, /round-trip swap cost/);
 });
 
-test("the shipped defaults are flagged, not silently shipped as sane", () => {
-  const warn = assertRiskRewardSanity();
-  assert.ok(warn.length >= 1, "1:3 against still deserves a warning");
+test("the SHIPPED defaults are flagged, not silently shipped as sane", () => {
+  // Asserted against the shipped values explicitly, not against config.management —
+  // that reads the operator's own user-config.json, so this test used to pass or fail
+  // depending on whose machine ran it. (It found a real setting while failing: a local
+  // config with stopLossPct -50 against takeProfitPct 5, i.e. 1:10 and a 90.9%
+  // break-even. The check works; the assertion was just pinned to the wrong source.)
+  const shipped = { management: { stopLossPct: -15, takeProfitPct: 5, trailingTakeProfit: false } };
+  const warn = assertRiskRewardSanity(shipped);
+  assert.equal(warn.length, 1, "1:3 against still deserves a warning");
   assert.match(warn[0].text, /75\.0% win rate/);
+});
+
+test("whatever the operator has configured locally is at least evaluated", () => {
+  // Not asserting a verdict — their numbers are their decision — only that the check
+  // runs against the live config and returns a well-formed result.
+  const warn = assertRiskRewardSanity();
+  assert.ok(Array.isArray(warn));
+  for (const w of warn) {
+    assert.ok(["warn", "error"].includes(w.level));
+    assert.ok(typeof w.text === "string" && w.text.length > 0);
+  }
 });

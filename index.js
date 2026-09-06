@@ -1,3 +1,7 @@
+// MUST stay the first import: it resolves --dry-run into process.env before config.js
+// (or anything else) reads it. See boot-flags.js for why a plain statement here would
+// not work — ESM hoists imports above top-level statements.
+import "./boot-flags.js";
 import "./envcrypt.js";
 import cron from "node-cron";
 import readline from "readline";
@@ -149,7 +153,9 @@ async function maybeRunMissedBriefing() {
   await runBriefing();
 }
 
-function stopCronJobs() {
+// Exported so a test (and any embedder) can tear the timers down. Without this the
+// 3s PnL poller keeps the event loop alive and the process never exits.
+export function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
   if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
   if (_cronTasks._opportunityPollInterval) clearInterval(_cronTasks._opportunityPollInterval);

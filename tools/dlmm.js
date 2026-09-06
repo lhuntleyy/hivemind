@@ -402,8 +402,16 @@ async function getPool(poolAddress) {
   return poolCache.get(key);
 }
 
-setInterval(() => poolCache.clear(), 5 * 60 * 1000);
-setInterval(() => poolMetadataCache.clear(), 15 * 60 * 1000);
+// Cache housekeeping. unref()'d because these are module-level timers that exist purely
+// to free memory — they must never be the reason the process stays alive.
+//
+// Without unref, ANY script that imports this module hangs forever on exit: the CLI, a
+// test run, a one-shot `meridian positions`. The daemon hid it because shutdown() calls
+// process.exit(0), which force-kills the loop instead of letting it drain.
+const _poolCacheSweeper = setInterval(() => poolCache.clear(), 5 * 60 * 1000);
+const _poolMetaSweeper = setInterval(() => poolMetadataCache.clear(), 15 * 60 * 1000);
+_poolCacheSweeper.unref?.();
+_poolMetaSweeper.unref?.();
 
 async function getPoolMetadata(poolAddress) {
   const key = String(poolAddress);

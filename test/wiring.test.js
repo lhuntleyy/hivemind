@@ -40,31 +40,36 @@ function sourceFiles(dir = ROOT, acc = []) {
 const SOURCES = sourceFiles();
 const CORPUS = SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n");
 
-/** Where does a panel setting land in the live config object? */
+/**
+ * Where does a panel setting land in the live config object?
+ *
+ * DERIVED, not hand-listed. An earlier version of this file kept a manual key -> section
+ * table, and the moment the settings schema grew from 55 entries to 152 the table went
+ * stale and the test failed on correct code. A mapping that has to be maintained by hand
+ * is the same failure mode this file exists to catch.
+ */
 function configPathFor(key) {
-  if (key.startsWith("risk.")) return ["risk", key.slice(5)];
-  if (key.startsWith("venue.")) return ["venue", key.slice(6)];
-  if (key.startsWith("spot.")) return ["spot", key.slice(5)];
-  if (key.startsWith("hiveMind.share.")) return ["hiveMind", "share", key.slice(15)];
-  const sections = {
-    maxPositions: "risk", maxDeployAmount: "risk",
-    deployAmountSol: "management", positionSizePct: "management", gasReserve: "management",
-    stopLossPct: "management", takeProfitPct: "management", trailingTakeProfit: "management",
-    trailingTriggerPct: "management", trailingDropPct: "management",
-    outOfRangeWaitMinutes: "management", solMode: "management", swapSlippageBps: "management",
-    minTvl: "screening", maxTvl: "screening", minOrganic: "screening", minHolders: "screening",
-    minMcap: "screening", maxMcap: "screening", minBinStep: "screening", maxBinStep: "screening",
-    minTokenFeesSol: "screening", minFeeActiveTvlRatio: "screening", timeframe: "screening",
+  // Dotted keys mirror the config tree exactly.
+  if (key.includes(".")) return key.split(".");
+
+  // A few panel names differ from their config names.
+  const ALIASES = {
     screeningSource: ["screening", "source"],
-    strategy: ["strategy", "strategy"],
-    managementIntervalMin: "schedule", screeningIntervalMin: "schedule",
-    screeningModel: "llm", managementModel: "llm", generalModel: "llm",
-    llmProvider: ["llm", "provider"], llmBaseUrl: ["llm", "baseUrl"],
+    llmProvider: ["llm", "provider"],
+    llmBaseUrl: ["llm", "baseUrl"],
     hiveMindPullMode: ["hiveMind", "pullMode"],
+    strategy: ["strategy", "strategy"],
   };
-  const s = sections[key];
-  if (Array.isArray(s)) return s;
-  if (s) return [s, key];
+  if (ALIASES[key]) return ALIASES[key];
+
+  // Otherwise find the leaf by name, searching the sections in a fixed order so a name
+  // that exists in two places resolves deterministically.
+  const ORDER = ["risk", "management", "screening", "schedule", "llm", "strategy", "spot", "venue", "darwin", "gmgn", "hiveMind", "indicators", "web", "pnl", "opportunity"];
+  for (const section of ORDER) {
+    if (config[section] && Object.prototype.hasOwnProperty.call(config[section], key)) {
+      return [section, key];
+    }
+  }
   return null;
 }
 

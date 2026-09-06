@@ -177,10 +177,14 @@
       <div id="llm-result" class="sub" style="margin-top:10px"></div>
     </fieldset>
 
-    <fieldset><legend>Settings</legend>
-      <div class="cols" id="fields"></div>
-      <button class="act primary" id="btn-save">Save settings</button>
-    </fieldset>
+    <div class="card" style="margin-bottom:14px">
+      <div class="row">
+        <input id="set-filter" placeholder="filter settings…" style="max-width:280px">
+        <button class="act primary" id="btn-save">Save all settings</button>
+        <span class="muted" id="set-count" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div id="set-groups"></div>
   </section>
 </main>
 
@@ -403,27 +407,79 @@ async function loadSettings() {
     '<label><span class="lb">' + k + " " + (v.set ? '<span class="pos">set · ' + esc(v.preview) + "</span>" : '<span class="warnc">not set</span>') +
     '</span><input type="password" data-secret="' + k + '" placeholder="' + (v.set ? "leave blank to keep" : "paste value") + '" autocomplete="off"></label>').join("");
 
-  $("#fields").innerHTML = Object.entries(SETTINGS.editable).map(([key, spec]) => {
-    const val = SETTINGS.values[key];
-    let input;
-    if (spec.type === "boolean") input = '<input type="checkbox" data-key="' + key + '"' + (val ? " checked" : "") + ">";
-    else if (spec.type === "enum") input = '<select data-key="' + key + '">' + spec.values.map((v) =>
-      '<option value="' + v + '"' + (String(val) === v ? " selected" : "") + ">" + v + "</option>").join("") + "</select>";
-    else input = '<input data-key="' + key + '" value="' + esc(val ?? "") + '"' +
-      (spec.type === "number" ? ' type="number" step="any"' + (spec.min != null ? ' min="' + spec.min + '"' : "") + (spec.max != null ? ' max="' + spec.max + '"' : "") : "") + ">";
-    return '<label><span class="lb">' + key + "</span>" + input + "</label>";
-  }).join("");
-
+  renderSettingGroups();
   renderLlmPanel();
 }
+
+
+function settingInput(key, spec, val) {
+  if (spec.type === "boolean") {
+    return '<input type="checkbox" data-key="' + key + '"' + (val ? " checked" : "") + ">";
+  }
+  if (spec.type === "enum") {
+    return '<select data-key="' + key + '">' + (spec.values || []).map((v) =>
+      '<option value="' + esc(v) + '"' + (String(val) === String(v) ? " selected" : "") + ">" + esc(v) + "</option>").join("") + "</select>";
+  }
+  if (spec.type === "csv") {
+    const text = Array.isArray(val) ? val.join(", ") : (val ?? "");
+    return '<input data-key="' + key + '" data-csv="1" value="' + esc(text) + '" placeholder="comma separated">';
+  }
+  // A null here is a real value in this config — "no limit" — not a missing setting.
+  // Rendering it as an empty box makes it look like an unwired control, which is the
+  // exact ambiguity this panel exists to remove.
+  if ((val === null || val === undefined) && spec.type === "number") {
+    return '<input data-key="' + key + '" value="" placeholder="no limit">';
+  }
+  const numAttrs = spec.type === "number"
+    ? ' type="number" step="any"' + (spec.min != null ? ' min="' + spec.min + '"' : "") + (spec.max != null ? ' max="' + spec.max + '"' : "")
+    : "";
+  return '<input data-key="' + key + '" value="' + esc(val ?? "") + '"' + numAttrs + ">";
+}
+
+function renderSettingGroups() {
+  const entries = Object.entries(SETTINGS.editable);
+  const groups = {};
+  for (const [key, spec] of entries) (groups[spec.group || "Other"] ||= []).push([key, spec]);
+
+  $("#set-groups").innerHTML = Object.entries(groups).map(([group, items]) =>
+    '<fieldset data-group="' + esc(group) + '"><legend>' + esc(group) + " (" + items.length + ")</legend><div class=\"cols\">" +
+    items.map(([key, spec]) => {
+      const val = SETTINGS.values[key];
+      return '<label data-setting="' + esc(key) + '" title="' + esc(key) + '">' +
+        '<span class="lb">' + esc(spec.label || key) +
+        (spec.help ? ' <span class="muted" style="font-weight:400">— ' + esc(spec.help) + "</span>" : "") +
+        "</span>" + settingInput(key, spec, val) + "</label>";
+    }).join("") + "</div></fieldset>").join("");
+
+  $("#set-count").textContent = entries.length + " settings";
+}
+
+$("#set-filter").oninput = (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  let shown = 0;
+  for (const el of $("[data-setting]")) {
+    const hit = !q || el.dataset.setting.toLowerCase().includes(q) || el.textContent.toLowerCase().includes(q);
+    el.hidden = !hit;
+    if (hit) shown++;
+  }
+  for (const fs2 of $("fieldset[data-group]")) {
+    fs2.hidden = !$("[data-setting]", fs2).some((el) => !el.hidden);
+  }
+  $("#set-count").textContent = shown + " of " + $("[data-setting]").length + " settings";
+};
 
 // ── LLM provider ────────────────────────────────────────────────
 function renderLlmPanel() {
   const L = SETTINGS && SETTINGS.llm;
   if (!L) return;
   const sel = $("#llm-provider");
+  // Show what ACTUALLY resolved, not the stored preference. Setting only llmBaseUrl
+  // auto-detects the provider, so the two can disagree — and a dropdown reading
+  // "OpenRouter" while requests go to a custom endpoint is exactly the kind of
+  // control-that-lies this panel exists to eliminate.
+  const active = L.provider || SETTINGS.values.llmProvider;
   sel.innerHTML = Object.entries(L.providers).map(([id, p]) =>
-    '<option value="' + id + '"' + (id === SETTINGS.values.llmProvider ? " selected" : "") + ">" + esc(p.label) + "</option>").join("");
+    '<option value="' + id + '"' + (id === active ? " selected" : "") + ">" + esc(p.label) + "</option>").join("");
   $("#llm-baseurl").value = SETTINGS.values.llmBaseUrl || "";
   $("#llm-baseurl").placeholder = L.providers[sel.value] && L.providers[sel.value].baseUrl || "https://...";
   updateLlmHint();
@@ -486,7 +542,11 @@ $("#btn-save-llm").onclick = async () => {
 
 $("#btn-save").onclick = async () => {
   const values = {};
-  $$("[data-key]").forEach((el) => { values[el.dataset.key] = el.type === "checkbox" ? el.checked : el.value; });
+  $("[data-key]").forEach((el) => {
+    if (el.type === "checkbox") values[el.dataset.key] = el.checked;
+    else if (el.dataset.csv) values[el.dataset.key] = el.value;
+    else values[el.dataset.key] = el.value;
+  });
   const r = await api("/api/settings", { method: "POST", body: JSON.stringify({ values }) });
   const errs = Object.entries(r.errors || {});
   $("#set-msg").innerHTML = '<div class="banner ' + (errs.length ? "warn" : "ok") + '">Saved ' + Object.keys(r.applied).length + " setting(s)." +

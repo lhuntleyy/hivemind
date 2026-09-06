@@ -10,9 +10,70 @@ const DEFAULT_AGENT_MERIDIAN_API_URL = "https://api.agentmeridian.xyz/api";
 const DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY = "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz";
 const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
 
-const u = fs.existsSync(USER_CONFIG_PATH)
-  ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
-  : {};
+/**
+ * Read user-config.json with an error a human can act on.
+ *
+ * A bare JSON.parse here — which is what this used to be — turns one missing comma into
+ * an unhandled SyntaxError that takes down the agent, every CLI command and the whole
+ * test suite, with a stack trace pointing at config.js:14 rather than at the line the
+ * operator actually mistyped.
+ *
+ * It still FAILS rather than falling back to defaults: a malformed config means the
+ * limits the operator intended are not loaded, and quietly trading on defaults is worse
+ * than not starting.
+ */
+function readUserConfigOrExplain(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    throw new Error(`Cannot read ${filePath}: ${error.message}`);
+  }
+
+  if (!raw.trim()) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("top level must be a JSON object");
+    }
+    return parsed;
+  } catch (error) {
+    // Locate the offending line so the message points at the typo, not at this file.
+    const posMatch = /position (\d+)/.exec(error.message);
+    let where = "";
+    let excerpt = "";
+    if (posMatch) {
+      const pos = Number(posMatch[1]);
+      const before = raw.slice(0, pos);
+      const line = before.split(/\r?\n/).length;
+      const column = pos - (before.lastIndexOf("\n") + 1);
+      where = ` at line ${line}, column ${column}`;
+
+      const lines = raw.split(/\r?\n/);
+      const from = Math.max(0, line - 3);
+      excerpt = lines
+        .slice(from, line + 1)
+        .map((text, i) => {
+          const n = from + i + 1;
+          return `${n === line ? " >" : "  "} ${String(n).padStart(4)} | ${text}`;
+        })
+        .join("\n");
+    }
+
+    throw new Error(
+      `user-config.json is not valid JSON${where}.\n\n${excerpt}\n\n` +
+      `  ${error.message}\n\n` +
+      `The most common cause is a missing or trailing comma between entries.\n` +
+      `Validate it with:  node -e "JSON.parse(require('fs').readFileSync('user-config.json','utf8'))"\n` +
+      `File: ${filePath}`,
+    );
+  }
+}
+
+const u = readUserConfigOrExplain(USER_CONFIG_PATH);
 export const MIN_SAFE_BINS_BELOW = 35;
 
 function numericConfig(value) {
@@ -320,6 +381,51 @@ export const config = {
         requireBbPosition:        r.requireBbPosition        ?? null,
       };
     })(),
+  },
+
+  // ─── Agent Meridian API + PnL poller + opportunity poller ────
+  // These were lost during an earlier config edit; config.pnl.pollIntervalSec is read
+  // by startCronJobs, so their absence crashed the agent at boot. See
+  // test/boot.test.js, which now starts the real cron path.
+  api: {
+    url: nonEmptyString(u.agentMeridianApiUrl, process.env.AGENT_MERIDIAN_API_URL, DEFAULT_AGENT_MERIDIAN_API_URL),
+    publicApiKey: nonEmptyString(u.publicApiKey, process.env.PUBLIC_API_KEY, DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY),
+    lpAgentRelayEnabled: u.lpAgentRelayEnabled ?? false,
+  },
+
+  pnl: {
+    // Live position value comes from on-chain reads on this RPC.
+    // Defaults to the public pump.helius endpoint so the aggressive poller
+    // never burns the main RPC_URL or the LPAgent sponsor budget.
+    rpcUrl: nonEmptyString(u.pnlRpcUrl, process.env.PNL_RPC_URL, "https://pump.helius-rpc.com"),
+    source: nonEmptyString(u.pnlSource, "rpc"), // rpc | meteora (fallback-only)
+    pollIntervalSec: Number(u.pnlPollIntervalSec ?? 3),
+    depositCacheTtlSec: Number(u.pnlDepositCacheTtlSec ?? 300),
+    // Consecutive confirming polls required before a peak is raised or an exit fires.
+    // At a 3s poll cadence, 2 ticks ≈ 3-6s — filters single-tick noise without the
+    // old fixed 15s setTimeout recheck.
+    confirmTicks: Number(u.pnlConfirmTicks ?? 2),
+  },
+
+  opportunity: {
+    enabled: u.opportunityPollEnabled ?? true,
+    pollIntervalSec: Number(u.opportunityPollIntervalSec ?? 45),
+    limit: Number(u.opportunityPollLimit ?? 10),
+    // Pre-gate: only trigger the full deploy decision when the best candidate's
+    // Degen Score (0..100) clears this bar — avoids running screening every 45s.
+    minScore: Number(u.opportunityMinScore ?? 40),
+    // A smart wallet (from the agentmeridian server) sitting on the pool LOWERS the
+    // effective minScore by this much — a strong signal nudges a borderline pool through.
+    smartWalletScoreBonus: Number(u.opportunitySmartWalletBonus ?? 20),
+    // Degen Score targets (each sub-score saturates at its target). Tune to calibrate.
+    // Inputs are normalized to a fixed 30m reference window, so these are timeframe-independent.
+    targetVolRatio: Number(u.degenTargetVolRatio ?? 20),     // (30m) volume/active_tvl for full trading sub-score
+    targetLpCount: Number(u.degenTargetLpCount ?? 40),       // (30m) unique_lps + positions_created for full LP sub-score
+    targetFeeRatio: Number(u.degenTargetFeeRatio ?? 0.20),   // (30m) fee/active_tvl for full fee sub-score (tune per timeframe; fees don't normalize as cleanly as volume)
+    // active_tvl ($) for full liquidity sub-score. NOT timeframe-scaled. Set near your
+    // active-TVL floor (≈ minTvl) so it acts as a dust floor, not a stretch goal — the
+    // screening minTvl filter already removes tiny pools.
+    targetLiquidity: Number(u.degenTargetLiquidity ?? 20000),
   },
 
   // ─── Spot venue (GMGN signals, Jupiter execution) ────────────

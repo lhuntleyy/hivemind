@@ -19,7 +19,7 @@
 | Swap slippage | no parameter sent at all | clamped to [50, 500] bps and surfaced in the result |
 | Spot | none | GMGN signals + Jupiter execution, inverted payoff, off by default |
 | Dry run | a stub that recorded nothing | paper trading in a separate ledger, priced off live quotes |
-| Tests | `node --check` (syntax only) | 201 unit tests + an HTTP smoke test |
+| Tests | `node --check` (syntax only) | 209 unit tests, a boot test and an HTTP smoke test |
 
 The measured effect on the swarm feed: of the 4 lessons Meridian injects into its screener prompt, **3 are test data** (`TEST-SOL … Reason: test close`). Run `node scripts/compare-pipelines.js --live` to see it.
 
@@ -30,7 +30,7 @@ The measured effect on the swarm feed: of the 4 lessons Meridian injects into it
 ```bash
 npm install
 cp user-config.example.json user-config.json
-npm run dev          # DRY_RUN=true — no on-chain transactions
+npm run dev          # dry run — no on-chain transactions (works on Windows too)
 ```
 
 Then open **http://127.0.0.1:4141** and fill in your keys under **Settings**. Nothing is written to `.env` until you press Save.
@@ -261,7 +261,7 @@ node cli.js llm providers
 ## Tests
 
 ```bash
-npm test                  # 147 unit tests
+npm test                  # 209 unit tests
 npm run smoke:panel       # control panel over real HTTP, including the breaker gate
 node scripts/compare-pipelines.js --live   # Meridian vs Hivemind on live swarm data
 ```

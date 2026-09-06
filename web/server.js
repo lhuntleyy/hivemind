@@ -29,6 +29,7 @@ import crypto from "node:crypto";
 
 import { config, assertRiskRewardSanity } from "../config.js";
 import { PROVIDER_IDS, PROVIDERS, resolveLlm, testLlmConnection } from "../llm-providers.js";
+import { buildEditable, GROUPS } from "./settings-schema.js";
 import { log } from "../logger.js";
 import { repoPath } from "../repo-root.js";
 
@@ -148,78 +149,7 @@ function writeUserConfig(next) {
 // Only these may be written from the browser. An open-ended setter would let the panel
 // (or anything that reaches it) rewrite arbitrary config.
 
-const EDITABLE = {
-  // risk
-  "risk.maxDailyLossSol":      { type: "number", min: 0, max: 1000 },
-  "risk.maxDailyLossPct":      { type: "number", min: 0, max: 100 },
-  "risk.maxConsecutiveLosses": { type: "number", min: 0, max: 50 },
-  "risk.maxDrawdownPct":       { type: "number", min: 0, max: 100 },
-  "risk.cooldownMinutes":      { type: "number", min: 0, max: 10080 },
-  // sizing
-  maxPositions:     { type: "number", min: 1, max: 20 },
-  deployAmountSol:  { type: "number", min: 0.05, max: 1000 },
-  maxDeployAmount:  { type: "number", min: 0.05, max: 10000 },
-  positionSizePct:  { type: "number", min: 0.01, max: 1 },
-  gasReserve:       { type: "number", min: 0, max: 10 },
-  // exits
-  stopLossPct:      { type: "number", min: -100, max: 0 },
-  takeProfitPct:    { type: "number", min: 0, max: 1000 },
-  trailingTakeProfit: { type: "boolean" },
-  trailingTriggerPct: { type: "number", min: 0, max: 100 },
-  trailingDropPct:    { type: "number", min: 0.1, max: 100 },
-  outOfRangeWaitMinutes: { type: "number", min: 0, max: 1440 },
-  // screening
-  minTvl:     { type: "number", min: 0, max: 1e9 },
-  maxTvl:     { type: "number", min: 0, max: 1e9 },
-  minOrganic: { type: "number", min: 0, max: 100 },
-  minHolders: { type: "number", min: 0, max: 1e6 },
-  minMcap:    { type: "number", min: 0, max: 1e12 },
-  maxMcap:    { type: "number", min: 0, max: 1e12 },
-  minBinStep: { type: "number", min: 1, max: 500 },
-  maxBinStep: { type: "number", min: 1, max: 500 },
-  minTokenFeesSol: { type: "number", min: 0, max: 10000 },
-  minFeeActiveTvlRatio: { type: "number", min: 0, max: 100 },
-  timeframe:  { type: "enum", values: ["5m", "30m", "1h", "2h", "4h", "12h", "24h"] },
-  strategy:   { type: "enum", values: ["spot", "bid_ask", "curve"] },
-  screeningSource: { type: "enum", values: ["meteora", "gmgn"] },
-  // schedule
-  managementIntervalMin: { type: "number", min: 1, max: 1440 },
-  screeningIntervalMin:  { type: "number", min: 1, max: 1440 },
-  // LLM provider + models
-  llmProvider: { type: "enum", values: PROVIDER_IDS },
-  // Validated as a URL, not a free string: it is where the API key gets sent.
-  llmBaseUrl:      { type: "url", max: 300 },
-  screeningModel:  { type: "string", max: 120 },
-  managementModel: { type: "string", max: 120 },
-  generalModel:    { type: "string", max: 120 },
-  // swarm sharing — off by default, operator opt-in only
-  "hiveMind.share.lessons":     { type: "boolean" },
-  "hiveMind.share.performance": { type: "boolean" },
-  "hiveMind.share.poolAddress": { type: "boolean" },
-  "hiveMind.share.poolName":    { type: "boolean" },
-  "hiveMind.share.baseMint":    { type: "boolean" },
-  hiveMindPullMode: { type: "enum", values: ["auto", "manual"] },
-  // spot venue
-  "spot.maxPositions":       { type: "number", min: 1, max: 20 },
-  "spot.sizeSol":            { type: "number", min: 0.01, max: 100 },
-  "spot.maxSizeSol":         { type: "number", min: 0.01, max: 1000 },
-  "spot.stopLossPct":        { type: "number", min: -100, max: 0 },
-  "spot.takeProfitPct":      { type: "number", min: 0, max: 10000 },
-  "spot.trailingTriggerPct": { type: "number", min: 0, max: 1000 },
-  "spot.trailingDropPct":    { type: "number", min: 0.1, max: 100 },
-  "spot.maxHoldMinutes":     { type: "number", min: 0, max: 20160 },
-  "spot.slippageBps":        { type: "number", min: 50, max: 500 },
-  swapSlippageBps:           { type: "number", min: 50, max: 500 },
-  // venue
-  "venue.lp":   { type: "boolean" },
-  "venue.spot": { type: "boolean" },
-  solMode: { type: "boolean" },
-  // NOTE: dryRun is deliberately NOT editable here. config.js applies it with
-  //   process.env.DRY_RUN ||= String(u.dryRun)
-  // so an already-set env var wins, and tools/wallet.js reads process.env at call time.
-  // A toggle in this panel would appear to switch live trading on or off while doing
-  // nothing — the most dangerous kind of control. Change DRY_RUN in .env and restart.
-};
+const EDITABLE = buildEditable(PROVIDER_IDS);
 
 function coerce(spec, raw) {
   switch (spec.type) {
@@ -241,6 +171,20 @@ function coerce(spec, raw) {
       // These land in an LLM request and in JSON config; keep them boring.
       if (/[<>`\r\n]/.test(s)) throw new Error("contains disallowed characters");
       return s;
+    }
+    case "csv": {
+      // Comma-separated list -> array. Accepts an array too, so a round-trip through
+      // the API does not corrupt the value.
+      const items = (Array.isArray(raw) ? raw : String(raw).split(","))
+        .map((v) => String(v).trim())
+        .filter(Boolean);
+      for (const item of items) {
+        if (item.length > 64) throw new Error(`entry "${item.slice(0, 20)}…" is too long`);
+        // These land in prompts and in filter comparisons; keep them inert.
+        if (/[<>`\r\n"']/.test(item)) throw new Error(`entry "${item}" contains disallowed characters`);
+      }
+      if (items.length > 50) throw new Error("too many entries (max 50)");
+      return items;
     }
     case "url": {
       const s = String(raw).trim();
@@ -272,8 +216,17 @@ function setDeep(obj, dottedKey, value) {
   node[parts.at(-1)] = value;
 }
 
-function getDeep(obj, dottedKey) {
-  return dottedKey.split(".").reduce((n, k) => (n == null ? undefined : n[k]), obj);
+/**
+ * Read a nested value by "a.b.c" or ["a","b","c"].
+ *
+ * Accepts both forms deliberately: it previously took a string only, and a later caller
+ * passed an already-split array, which threw "dottedKey.split is not a function" and
+ * turned the entire settings endpoint into a 500 — the whole Settings tab went blank
+ * with no clue why.
+ */
+function getDeep(obj, key) {
+  const parts = Array.isArray(key) ? key : String(key).split(".");
+  return parts.reduce((n, k) => (n == null ? undefined : n[k]), obj);
 }
 
 // ─── request helpers ────────────────────────────────────────────
@@ -582,48 +535,47 @@ async function handleApi(req, res, url) {
   return json(res, 404, { error: `no route for ${route}` });
 }
 
+/**
+ * Resolve a panel setting to its current live value.
+ *
+ * DERIVED, not hand-listed. This used to be a manual key -> config.section.key table;
+ * when the schema grew to 152 entries the table went stale and nine settings rendered
+ * as empty inputs — which in this codebase is indistinguishable from "not configured",
+ * the exact signature of the risk-control bugs this project keeps producing.
+ *
+ * Panel names that differ from config names are aliased explicitly; everything else is
+ * found by searching the config tree in a fixed section order.
+ */
+const CONFIG_ALIASES = {
+  screeningSource:  ["screening", "source"],
+  llmProvider:      ["llm", "provider"],
+  llmBaseUrl:       ["llm", "baseUrl"],
+  hiveMindPullMode: ["hiveMind", "pullMode"],
+  strategy:         ["strategy", "strategy"],
+};
+
+// Fixed order so a leaf name present in two sections resolves deterministically.
+const CONFIG_SECTION_ORDER = [
+  "risk", "management", "screening", "schedule", "llm", "strategy",
+  "spot", "venue", "darwin", "gmgn", "hiveMind", "indicators", "web", "pnl", "opportunity",
+];
+
 function liveConfigValue(key) {
-  const map = {
-    maxPositions: config.risk.maxPositions,
-    maxDeployAmount: config.risk.maxDeployAmount,
-    deployAmountSol: config.management.deployAmountSol,
-    positionSizePct: config.management.positionSizePct,
-    gasReserve: config.management.gasReserve,
-    stopLossPct: config.management.stopLossPct,
-    takeProfitPct: config.management.takeProfitPct,
-    trailingTakeProfit: config.management.trailingTakeProfit,
-    trailingTriggerPct: config.management.trailingTriggerPct,
-    trailingDropPct: config.management.trailingDropPct,
-    outOfRangeWaitMinutes: config.management.outOfRangeWaitMinutes,
-    solMode: config.management.solMode,
-    minTvl: config.screening.minTvl,
-    maxTvl: config.screening.maxTvl,
-    minOrganic: config.screening.minOrganic,
-    minHolders: config.screening.minHolders,
-    minMcap: config.screening.minMcap,
-    maxMcap: config.screening.maxMcap,
-    minBinStep: config.screening.minBinStep,
-    maxBinStep: config.screening.maxBinStep,
-    minTokenFeesSol: config.screening.minTokenFeesSol,
-    minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio,
-    timeframe: config.screening.timeframe,
-    screeningSource: config.screening.source,
-    strategy: config.strategy.strategy,
-    managementIntervalMin: config.schedule.managementIntervalMin,
-    screeningIntervalMin: config.schedule.screeningIntervalMin,
-    screeningModel: config.llm.screeningModel,
-    managementModel: config.llm.managementModel,
-    generalModel: config.llm.generalModel,
-    swapSlippageBps: config.management.swapSlippageBps,
-    llmProvider: config.llm.provider,
-    llmBaseUrl: config.llm.baseUrl ?? "",
-    hiveMindPullMode: config.hiveMind.pullMode,
-  };
-  if (key in map) return map[key];
-  if (key.startsWith("risk.")) return config.risk[key.slice(5)];
-  if (key.startsWith("venue.")) return config.venue[key.slice(6)];
-  if (key.startsWith("spot.")) return config.spot[key.slice(5)];
-  if (key.startsWith("hiveMind.share.")) return config.hiveMind.share[key.slice(15)];
+  if (key.includes(".")) {
+    const v = getDeep(config, key);
+    return v === undefined ? null : v;
+  }
+  if (CONFIG_ALIASES[key]) {
+    const v = getDeep(config, CONFIG_ALIASES[key]);
+    return v === undefined ? null : v;
+  }
+  for (const section of CONFIG_SECTION_ORDER) {
+    const bucket = config[section];
+    if (bucket && Object.prototype.hasOwnProperty.call(bucket, key)) {
+      const v = bucket[key];
+      return v === undefined ? null : v;
+    }
+  }
   return null;
 }
 

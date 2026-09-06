@@ -14,13 +14,14 @@
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:restart": "pm2 restart hivemind --update-env",
     "pm2:logs": "pm2 logs hivemind --lines 100",
-    "dev": "DRY_RUN=true node index.js",
+    "dev": "node index.js --dry-run",
     "test": "node --test \"test/*.test.js\"",
     "test:syntax": "node -e \"process.exit(0)\"",
     "test:screen": "node test/test-screening.js",
-    "test:agent": "DRY_RUN=true node test/test-agent.js",
+    "test:agent": "node test/test-agent.js --dry-run",
     "postinstall": "node scripts/patch-anchor.js",
-    "smoke:panel": "node scripts/smoke-panel.mjs"
+    "smoke:panel": "node scripts/smoke-panel.mjs",
+    "live": "node index.js --live"
   },
   "knip": {
     "ignore": [
