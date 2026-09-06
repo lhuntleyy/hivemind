@@ -121,3 +121,78 @@ test("spot ships disabled", () => {
 test("spot slippage stays inside the wallet clamp", () => {
   assert.ok(config.spot.slippageBps >= 50 && config.spot.slippageBps <= 500);
 });
+
+// ─── pricing ────────────────────────────────────────────────────
+
+import { getPricesSol, isPaperMode } from "../venues/spot.js";
+
+const SOL = "So11111111111111111111111111111111111111112";
+
+test("prices are converted to SOL per token, not left in USD", async () => {
+  const out = await getPricesSol(["MINTA"], {
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => [
+        { id: SOL, usdPrice: 200 },
+        { id: "MINTA", usdPrice: 0.5 },
+      ],
+    }),
+  });
+  assert.equal(out.MINTA, 0.0025, "0.5 USD / 200 USD-per-SOL");
+});
+
+test("a missing SOL price yields NO prices rather than wrong ones", async () => {
+  // Without a SOL price every conversion would be garbage. Returning null everywhere
+  // makes the exit rules stand down; returning a wrong number would make them fire.
+  const out = await getPricesSol(["MINTA"], {
+    fetchImpl: async () => ({ ok: true, json: async () => [{ id: "MINTA", usdPrice: 0.5 }] }),
+  });
+  assert.equal(out.MINTA, null);
+});
+
+test("a token Jupiter cannot price comes back null, not zero", async () => {
+  // This is the trap the fallback exists for: a null treated as 0 reads as -100%
+  // against any cost basis and would sell every position instantly.
+  const out = await getPricesSol(["FRESH"], {
+    fetchImpl: async () => ({ ok: true, json: async () => [{ id: SOL, usdPrice: 200 }] }),
+  });
+  assert.equal(out.FRESH, null);
+  assert.notEqual(out.FRESH, 0);
+});
+
+test("a price-feed outage degrades to nulls without throwing", async () => {
+  for (const impl of [
+    async () => { throw new Error("ECONNRESET"); },
+    async () => ({ ok: false, status: 503 }),
+    async () => ({ ok: true, json: async () => { throw new Error("bad json"); } }),
+    async () => ({ ok: true, json: async () => null }),
+  ]) {
+    const out = await getPricesSol(["A", "B"], { fetchImpl: impl });
+    assert.deepEqual(out, { A: null, B: null });
+  }
+});
+
+test("an empty mint list makes no network call", async () => {
+  let called = false;
+  const out = await getPricesSol([], { fetchImpl: async () => { called = true; } });
+  assert.deepEqual(out, {});
+  assert.equal(called, false);
+});
+
+test("duplicate mints are de-duplicated before the request", async () => {
+  let url = "";
+  await getPricesSol(["A", "A", "B"], {
+    fetchImpl: async (u) => { url = u; return { ok: true, json: async () => [] }; },
+  });
+  const q = decodeURIComponent(url.split("query=")[1] || "");
+  assert.equal(q.split(",").filter((m) => m === "A").length, 1);
+});
+
+test("paper mode follows DRY_RUN", () => {
+  const saved = process.env.DRY_RUN;
+  process.env.DRY_RUN = "true";
+  assert.equal(isPaperMode(), true);
+  process.env.DRY_RUN = "false";
+  assert.equal(isPaperMode(), false);
+  if (saved === undefined) delete process.env.DRY_RUN; else process.env.DRY_RUN = saved;
+});

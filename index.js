@@ -35,7 +35,7 @@ import { getWeightsSummary } from "./signal-weights.js";
 import { bootstrapHiveMind, ensureAgentId, getHiveMindPullMode, isHiveMindEnabled, pullHiveMindLessons, pullHiveMindPresets, registerHiveMindAgent, startHiveMindBackgroundSync } from "./hivemind.js";
 import { appendDecision } from "./decision-log.js";
 import { riskGuard, markPortfolioEquity } from "./risk.js";
-import { monitorSpot, getSpotPositions, getSpotSummary, openSpot, closeSpot, isSpotEnabled } from "./venues/spot.js";
+import { monitorSpot, runSpotEntry, getSpotPositions, getSpotSummary, openSpot, closeSpot, isSpotEnabled } from "./venues/spot.js";
 import { noteScreenWithoutDeploy, evolveThresholdsBidirectional, getLearningStatus } from "./self-learning.js";
 import { startControlPanel } from "./web/server.js";
 
@@ -807,7 +807,34 @@ Summarize the current portfolio health, total fees earned, and performance of al
   if (config.venue?.spot) {
     const spotMs = Math.max(10, Number(config.spot?.monitorIntervalSec ?? 30)) * 1000;
     let _spotBusy = false;
+    let _spotEntryBusy = false;
+    let _lastSpotEntryAt = 0;
+
+    // Entry runs on its OWN busy flag, not the exit monitor's.
+    //
+    // GMGN's discovery pipeline is rate-limited and takes tens of seconds. Awaiting it
+    // inside the exit tick — which is what an earlier revision did — held the monitor
+    // lock the whole time and skipped every exit check that fell in that window. Exits
+    // must never be starved by the search for a new entry.
+    const entryEveryMs = Math.max(60, Number(config.spot?.entryIntervalSec ?? 300)) * 1000;
+    const maybeEnterSpot = () => {
+      if (_spotEntryBusy || Date.now() - _lastSpotEntryAt < entryEveryMs) return;
+      _spotEntryBusy = true;
+      _lastSpotEntryAt = Date.now();
+      runSpotEntry()
+        .then((e) => {
+          if (e?.result?.success) log("spot", `Entry: ${e.candidate} opened`);
+          else if (e?.skipped) log("spot", `Entry skipped: ${e.skipped}`);
+          else if (e?.result?.blocked) log("spot", `Entry blocked: ${e.result.reason}`);
+        })
+        .catch((err) => log("spot_error", `Spot entry failed: ${err.message}`))
+        .finally(() => { _spotEntryBusy = false; });
+    };
+
     spotMonitorInterval = setInterval(async () => {
+      // Kick entry off without awaiting it, so a slow pipeline cannot delay exits.
+      maybeEnterSpot();
+
       if (_spotBusy) return;
       _spotBusy = true;
       try {

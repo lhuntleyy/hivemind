@@ -15,7 +15,11 @@
 | Swarm sharing | pushes pool, mint, PnL, timing keyed to a stable agent id | **pull-only** — every share flag is off by default |
 | Own learning | pool-name lessons; one-way threshold ratchet | feature-band playbook with Wilson bounds; bidirectional evolution with a starvation release |
 | Control | terminal REPL + Telegram | REPL + Telegram + local web control panel |
-| Tests | `node --check` (syntax only) | 147 unit tests + an HTTP smoke test |
+| LLM | OpenRouter hard-coded, read once at import | any OpenAI-compatible endpoint, resolved per request, with a connection test |
+| Swap slippage | no parameter sent at all | clamped to [50, 500] bps and surfaced in the result |
+| Spot | none | GMGN signals + Jupiter execution, inverted payoff, off by default |
+| Dry run | a stub that recorded nothing | paper trading in a separate ledger, priced off live quotes |
+| Tests | `node --check` (syntax only) | 194 unit tests + an HTTP smoke test |
 
 The measured effect on the swarm feed: of the 4 lessons Meridian injects into its screener prompt, **3 are test data** (`TEST-SOL … Reason: test close`). Run `node scripts/compare-pipelines.js --live` to see it.
 
@@ -66,13 +70,16 @@ the most dangerous control in the app. Change it in `.env` and restart.
 
 ## Running on a VPS
 
+See [deploy/README.md](deploy/README.md). One command on a fresh Ubuntu box:
+
 ```bash
-git clone <your-repo> hivemind && cd hivemind
-npm install
-cp user-config.example.json user-config.json
-npm run pm2:start
-pm2 save
+curl -fsSL https://raw.githubusercontent.com/lhuntleyy/hivemind/main/deploy/vps-setup.sh -o vps-setup.sh
+less vps-setup.sh    # read it first
+bash vps-setup.sh
 ```
+
+It installs Node 22, creates an unprivileged service user, locks ufw to SSH only, and
+installs a hardened systemd unit. The agent starts in DRY_RUN.
 
 **Do not expose the panel.** Tunnel to it instead:
 
@@ -194,9 +201,60 @@ transactions — spot execution is a separate venue that ships disabled.
 { "venue": { "lp": true, "spot": false } }
 ```
 
-LP on Meteora is the only execution path enabled. Spot is wired but off: running two
-engines that touch money doubles the surface where a bug costs you. Turn it on
-deliberately, after paper-trading it.
+**LP (Meteora)** is on by default. **Spot** is complete but off.
+
+Spot uses GMGN for signals and Jupiter for execution — deliberately not GMGN's trading
+API. A second private key in a third-party config file is a second way to lose the
+wallet, and `tools/wallet.js#swapToken` is already the one execution path here with
+slippage bounds and a dry-run branch.
+
+The payoff is inverted on purpose:
+
+| | LP (measured on swarm data) | Spot (defaults) |
+|---|---|---|
+| Typical win | +2.6% | +40% target |
+| Typical loss | -15% | -8% stop |
+| Break-even win rate | ~85% | ~17% |
+
+Both venues share the same risk breaker — a spot loss counts against the same daily
+limit as an LP loss, because it comes out of the same wallet.
+
+Turn it on only after paper trading it:
+
+```bash
+node cli.js config set venue.spot true
+# with DRY_RUN=true, entries and exits book into spot-positions.paper.json,
+# priced off live Jupiter quotes. The real risk ledger is never touched.
+node cli.js spot list
+```
+
+---
+
+## LLM providers
+
+Any OpenAI-compatible endpoint. Set it in the panel (Settings → LLM provider) with a
+**Test connection** button, or in `user-config.json`:
+
+| Provider | Key env | Example model |
+|---|---|---|
+| `openrouter` (default) | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.5` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4.1` |
+| `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `together`, `xai`, `google` | their own | see `cli.js llm providers` |
+| `local` | none needed | LM Studio / Ollama / vLLM |
+| `custom` | `LLM_API_KEY` | any `/chat/completions` endpoint |
+
+The endpoint is resolved on every request, so a key entered in the panel works on the
+next cycle without a restart. Plaintext HTTP to a non-local host is refused — the API
+key would otherwise travel in the clear.
+
+```bash
+node cli.js llm status      # what resolved, and why not if it did not
+node cli.js llm test        # does the key actually authenticate
+node cli.js llm providers
+```
 
 ---
 
@@ -219,9 +277,12 @@ node scripts/compare-pipelines.js --live   # Meridian vs Hivemind on live swarm 
   the sanitizer, not the scorer, is what keeps a hostile rule out of the prompt.
 - **Equity contract** — the drawdown limit only sees what `markPortfolioEquity` is fed.
   It must include open-position value, not just wallet SOL.
-- **No slippage control on swaps** — `swapToken` sends no slippage parameter, and the
-  relay zap-out uses 5000 bps. Inherited from Meridian; not fixed here.
-- **No backtest** — there is no paper-trading harness. Build one before adding strategies.
+- **Relay zap-out still uses 5000 bps** — the swap path is now clamped to 500 bps, but the
+  relay-built close transaction sets its own. Only reachable with `lpAgentRelayEnabled`.
+- **Paper trading is not a backtest** — it exercises the full loop on live prices, which
+  catches wiring bugs, but it cannot tell you whether a strategy is profitable over time.
+- **Spot exits depend on a price feed** — Jupiter first, wallet valuation second. A token
+  neither can price falls back to the max-hold clock, and the log says so.
 
 ---
 

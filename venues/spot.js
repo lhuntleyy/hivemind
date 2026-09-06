@@ -34,30 +34,87 @@ import { repoPath } from "../repo-root.js";
 import { getWalletBalances, swapToken, normalizeMint } from "../tools/wallet.js";
 import { riskGuard } from "../risk.js";
 
-const POSITIONS_FILE = repoPath("spot-positions.json");
 const SOL_MINT = "So11111111111111111111111111111111111111112";
+const JUP_SEARCH = "https://datapi.jup.ag/v1/assets/search";
+
+/**
+ * Paper trades live in their OWN file and never touch the real risk ledger.
+ *
+ * Mixing them would be worse than not having them: a simulated -8% would count against
+ * the real daily-loss limit and could halt live deploys, and a simulated win would
+ * quietly raise the equity peak the drawdown limit measures from.
+ */
+export function isPaperMode() {
+  return process.env.DRY_RUN === "true";
+}
+
+function positionsFile() {
+  return repoPath(isPaperMode() ? "spot-positions.paper.json" : "spot-positions.json");
+}
 
 // ─── persistence ────────────────────────────────────────────────
 
 function load() {
+  const file = positionsFile();
   try {
-    if (!fs.existsSync(POSITIONS_FILE)) return { positions: {}, closed: [], updated_at: null };
-    const d = JSON.parse(fs.readFileSync(POSITIONS_FILE, "utf8"));
+    if (!fs.existsSync(file)) return { positions: {}, closed: [], updated_at: null };
+    const d = JSON.parse(fs.readFileSync(file, "utf8"));
     return { positions: d.positions || {}, closed: d.closed || [], updated_at: d.updated_at || null };
   } catch (error) {
     // Unlike the risk ledger, a corrupt position file cannot fail closed by pretending
     // there are no positions — that would strand real tokens with no exit rules. Refuse
     // loudly instead so the operator fixes it rather than silently trading blind.
-    log("spot_error", `spot-positions.json unreadable: ${error.message}. Spot venue disabled until fixed.`);
+    log("spot_error", `${file} unreadable: ${error.message}. Spot venue disabled until fixed.`);
     return null;
   }
 }
 
 function save(state) {
+  const file = positionsFile();
   state.updated_at = new Date().toISOString();
-  const tmp = `${POSITIONS_FILE}.tmp`;
+  const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, POSITIONS_FILE);
+  fs.renameSync(tmp, file);
+}
+
+// ─── pricing ────────────────────────────────────────────────────
+
+/**
+ * Price a set of mints in SOL.
+ *
+ * Jupiter FIRST, Helius second. This ordering is the whole reason the exits work:
+ * Helius often returns a null USD value for a token minted hours ago — exactly the
+ * tokens this venue trades — and with no price the stop loss and take profit can never
+ * evaluate. A position would then only ever exit on the max-hold clock, which is not a
+ * risk control, it is a timer.
+ *
+ * @returns {Promise<Record<string, number|null>>} mint -> SOL per token
+ */
+export async function getPricesSol(mints, { solPriceUsd = null, fetchImpl = globalThis.fetch } = {}) {
+  const list = [...new Set((mints || []).filter(Boolean))];
+  if (list.length === 0) return {};
+
+  const out = Object.fromEntries(list.map((m) => [m, null]));
+  try {
+    const res = await fetchImpl(`${JUP_SEARCH}?query=${[SOL_MINT, ...list].join(",")}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`Jupiter ${res.status}`);
+    const assets = await res.json();
+    const usd = {};
+    for (const a of Array.isArray(assets) ? assets : []) {
+      const p = Number(a?.usdPrice);
+      if (a?.id && Number.isFinite(p)) usd[a.id] = p;
+    }
+    const solUsd = Number(usd[SOL_MINT] ?? solPriceUsd);
+    if (!(solUsd > 0)) return out; // cannot convert to SOL — leave every price null
+    for (const m of list) {
+      if (Number.isFinite(usd[m]) && usd[m] > 0) out[m] = usd[m] / solUsd;
+    }
+  } catch (error) {
+    log("spot_warn", `Jupiter price lookup failed: ${error.message} — falling back to wallet valuations`);
+  }
+  return out;
 }
 
 // ─── helpers ────────────────────────────────────────────────────
@@ -143,10 +200,39 @@ export async function openSpot({ mint, symbol = null, amount_sol = null, reason 
     slippage_bps: cfg.slippageBps,
   });
 
+  // PAPER MODE. Meridian's only "dry run" was a swap that returned a stub and recorded
+  // nothing, so the exit rules, the peak tracking and the trailing arm were never
+  // exercised until real money was on the line. Here a dry run books a real position
+  // in a separate paper file, priced off live Jupiter quotes, so the whole loop runs.
   if (swap?.dry_run) {
-    log("spot", `[DRY RUN] would buy ${size} SOL of ${symbol || targetMint.slice(0, 8)}`);
-    return { dry_run: true, would_open: { mint: targetMint, symbol, amount_sol: size, slippage_bps: swap.would_swap.slippage_bps }, reason };
+    const prices = await getPricesSol([targetMint]);
+    const px = prices[targetMint];
+    if (!(px > 0)) {
+      return { dry_run: true, blocked: true, reason: `Cannot price ${symbol || targetMint.slice(0, 8)} — refusing to open even a paper position without a cost basis.` };
+    }
+    // Model the cost the real path would pay: slippage plus the Jupiter fee.
+    const fill = px * (1 + cfg.slippageBps / 10_000);
+    const id = `paper_${Date.now()}_${targetMint.slice(0, 6)}`;
+    state.positions[id] = {
+      id, paper: true,
+      mint: targetMint,
+      symbol: symbol || targetMint.slice(0, 8),
+      amount_sol_in: size,
+      tokens: size / fill,
+      entry_price_sol: fill,
+      entry_tx: null,
+      opened_at: new Date().toISOString(),
+      peak_pnl_pct: 0,
+      trailing_active: false,
+      closed: false,
+      reason: reason || null,
+      signal: signal || null,
+    };
+    save(state);
+    log("spot", `[PAPER] OPEN ${state.positions[id].symbol}: ${size} SOL at ${fill.toExponential(3)} SOL/token`);
+    return { dry_run: true, paper: true, success: true, id, mint: targetMint, amount_sol: size, entry_price_sol: fill };
   }
+
   if (!swap || swap.error || swap.success === false || !swap.tx) {
     return { success: false, error: swap?.error || "swap returned no transaction" };
   }
@@ -222,10 +308,34 @@ export async function closeSpot(id, reason = "manual") {
     slippage_bps: cfg.slippageBps,
   });
 
+  // Paper close: settle at the live price minus modelled slippage, book the result in
+  // the paper ledger, and do NOT touch the real risk breaker.
   if (swap?.dry_run) {
-    log("spot", `[DRY RUN] would sell ${sellAmount} ${pos.symbol} (${reason})`);
-    return { dry_run: true, would_close: { id, symbol: pos.symbol, reason } };
+    const prices = await getPricesSol([pos.mint]);
+    const px = prices[pos.mint];
+    const fill = px > 0 ? px * (1 - cfg.slippageBps / 10_000) : null;
+    const solOutPaper = fill > 0 && pos.tokens > 0 ? fill * pos.tokens : null;
+    const pnlSolPaper = Number.isFinite(solOutPaper) ? solOutPaper - pos.amount_sol_in : null;
+
+    pos.closed = true;
+    pos.closed_at = new Date().toISOString();
+    pos.close_reason = reason;
+    pos.sol_out = Number.isFinite(solOutPaper) ? Math.round(solOutPaper * 1e6) / 1e6 : null;
+    pos.pnl_sol = Number.isFinite(pnlSolPaper) ? Math.round(pnlSolPaper * 1e6) / 1e6 : null;
+    pos.pnl_pct = Number.isFinite(pnlSolPaper) && pos.amount_sol_in > 0
+      ? Math.round((pnlSolPaper / pos.amount_sol_in) * 10000) / 100
+      : null;
+    pos.minutes_held = Math.round((Date.now() - Date.parse(pos.opened_at)) / 60000);
+
+    state.closed.push(pos);
+    if (state.closed.length > 500) state.closed = state.closed.slice(-500);
+    delete state.positions[id];
+    save(state);
+
+    log("spot", `[PAPER] CLOSE ${pos.symbol}: ${pos.pnl_sol} SOL (${pos.pnl_pct}%) — ${reason}`);
+    return { dry_run: true, paper: true, success: true, id, pnl_sol: pos.pnl_sol, pnl_pct: pos.pnl_pct, reason };
   }
+
   if (!swap || swap.error || swap.success === false || !swap.tx) {
     return { success: false, error: swap?.error || "sell swap returned no transaction" };
   }
@@ -314,16 +424,38 @@ export async function monitorSpot() {
   if (open.length === 0) return { checked: 0, actions: [] };
 
   const cfg = spotCfg();
-  const bal = await getWalletBalances().catch(() => null);
-  const solPrice = bal?.sol_price || 0;
+
+  // Paper positions have no wallet balance to read, so skip the wallet call entirely
+  // in paper mode — it would otherwise fail or return nothing and mask the prices.
+  const bal = isPaperMode() ? null : await getWalletBalances().catch(() => null);
+  const solPrice = bal?.sol_price || null;
+
+  // Price everything in ONE Jupiter call rather than per position.
+  const prices = await getPricesSol(open.map((p) => p.mint), { solPriceUsd: solPrice });
   const actions = [];
 
   for (const pos of open) {
-    const held = bal?.tokens?.find((t) => t.mint === pos.mint);
-    // Helius gives USD; convert to SOL per token so it is comparable to the basis.
-    let priceSol = null;
-    if (held && held.balance > 0 && Number.isFinite(held.usd) && solPrice > 0) {
-      priceSol = (held.usd / held.balance) / solPrice;
+    let priceSol = prices[pos.mint] ?? null;
+
+    // Fall back to the wallet's own valuation only if Jupiter had nothing. Helius
+    // frequently returns a null USD value for a token minted hours ago, which is why
+    // this is the fallback and not the primary.
+    if (!(priceSol > 0) && bal && solPrice > 0) {
+      const held = bal.tokens?.find((t) => t.mint === pos.mint);
+      if (held && held.balance > 0 && Number.isFinite(held.usd) && held.usd > 0) {
+        priceSol = (held.usd / held.balance) / solPrice;
+      }
+    }
+
+    if (!(priceSol > 0)) {
+      // Recorded, not guessed. A position we cannot price has no working stop loss, and
+      // the operator needs to know that rather than assume the rules are running.
+      pos.unpriced_ticks = (pos.unpriced_ticks || 0) + 1;
+      if (pos.unpriced_ticks === 5 || pos.unpriced_ticks % 50 === 0) {
+        log("spot_warn", `${pos.symbol} unpriced for ${pos.unpriced_ticks} ticks — only the max-hold clock can exit it.`);
+      }
+    } else {
+      pos.unpriced_ticks = 0;
     }
 
     // Update peak / arm trailing BEFORE evaluating exits, same order as the LP side.
@@ -351,6 +483,74 @@ export async function monitorSpot() {
   }
 
   return { checked: open.length, actions };
+}
+
+// ─── entry (autonomous) ─────────────────────────────────────────
+
+/**
+ * One autonomous spot-entry cycle, driven by GMGN's screening pipeline.
+ *
+ * DELIBERATELY LLM-FREE. GMGN's own filters already encode the judgement — KOL flow,
+ * rug/bundler/sniper ratios, dev holdings, and a Supertrend + RSI + Bollinger gate.
+ * Adding a model on top would let a hallucinated rationale open a position, which is
+ * the exact failure the LP side needs a "NO HALLUCINATION" prompt rule to police. Here
+ * the pipeline either produces a candidate that passed every filter, or it does not.
+ *
+ * Requires: venue.spot on, a GMGN API key, and a risk breaker that is not tripped.
+ */
+export async function runSpotEntry({ limit = 8 } = {}) {
+  if (!isSpotEnabled()) return { skipped: "spot venue disabled" };
+
+  const gate = riskGuard.canDeploy();
+  if (!gate.pass) return { skipped: gate.reason };
+
+  const { hasGmgnApiKey, discoverGmgnPools } = await import("../tools/gmgn.js");
+  if (!hasGmgnApiKey()) {
+    return { skipped: "no GMGN API key — spot entry needs one for KOL and rug screening" };
+  }
+
+  const state = load();
+  if (!state) return { skipped: "positions file unreadable" };
+
+  const cfg = spotCfg();
+  const open = Object.values(state.positions).filter((p) => !p.closed);
+  if (open.length >= cfg.maxPositions) {
+    return { skipped: `already holding ${open.length}/${cfg.maxPositions} spot positions` };
+  }
+
+  let discovery;
+  try {
+    discovery = await discoverGmgnPools({ limit });
+  } catch (error) {
+    return { skipped: `GMGN discovery failed: ${error.message}` };
+  }
+
+  const candidates = (discovery?.pools || []).filter((c) => c?.base?.mint);
+  if (candidates.length === 0) {
+    return { skipped: "no GMGN candidates cleared the filters", stage_counts: discovery?.stage_counts };
+  }
+
+  const heldMints = new Set(open.map((p) => p.mint));
+  const pick = candidates.find((c) => !heldMints.has(c.base.mint));
+  if (!pick) return { skipped: "every candidate is already held" };
+
+  const result = await openSpot({
+    mint: pick.base.mint,
+    symbol: pick.base.symbol || pick.name || null,
+    amount_sol: cfg.sizeSol,
+    reason: "gmgn spot entry",
+    // Kept for the post-mortem: without the signal that justified the entry, a losing
+    // trade teaches nothing.
+    signal: {
+      indicators: pick.indicators ?? null,
+      kols: pick.gmgn_kol_count ?? null,
+      smart_degen: pick.gmgn_smart_degen_count ?? null,
+      mcap: pick.mcap ?? null,
+      price_vs_ath_pct: pick.price_vs_ath_pct ?? null,
+    },
+  });
+
+  return { candidate: pick.base.symbol || pick.base.mint, result, considered: candidates.length };
 }
 
 // ─── read ───────────────────────────────────────────────────────

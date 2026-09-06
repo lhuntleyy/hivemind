@@ -310,7 +310,7 @@ function renderSpot(spot) {
   const open = spot.open || [];
   $("#spot-body").innerHTML = open.length ? open.map((p) => {
     const pnl = Number(p.last_pnl_pct);
-    return "<tr><td>" + esc(p.symbol) + "</td>" +
+    return "<tr><td>" + esc(p.symbol) + (p.paper ? " <span class=\"pill dry\">PAPER</span>" : "") + "</td>" +
       '<td class="' + sign(pnl) + '">' + (Number.isFinite(pnl) ? (pnl > 0 ? "+" : "") + fmt(pnl) + "%" : "—") + "</td>" +
       "<td>" + fmt(p.amount_sol_in, 3) + "</td>" +
       "<td>" + (p.entry_price_sol ? Number(p.entry_price_sol).toExponential(3) : "—") + "</td>" +

@@ -100,7 +100,7 @@ Updating:
 
 ```bash
 cd /opt/hivemind
-sudo git pull
+sudo -u hivemind git pull
 sudo -u hivemind npm install
 sudo systemctl restart hivemind
 ```

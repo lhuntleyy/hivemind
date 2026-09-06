@@ -20,6 +20,7 @@ gmgn-config.json
 risk-state.json
 learning-state.json
 spot-positions.json
+spot-positions.paper.json
 *.tmp
 
 # (original list below)

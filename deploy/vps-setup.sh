@@ -173,6 +173,6 @@ Next steps
      sudo systemctl restart hivemind
 
 Updating later:
-     cd ${INSTALL_DIR} && sudo git pull && sudo -u ${RUN_USER} npm install && sudo systemctl restart hivemind
+     cd ${INSTALL_DIR} && sudo -u hivemind git pull && sudo -u ${RUN_USER} npm install --omit=dev && sudo systemctl restart hivemind
 
 EOF

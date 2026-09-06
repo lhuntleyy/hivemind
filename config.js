@@ -340,6 +340,9 @@ export const config = {
     slippageBps:        u.spot?.slippageBps        ?? 300,
     minSolReserve:      u.spot?.minSolReserve      ?? 0.05,
     monitorIntervalSec: u.spot?.monitorIntervalSec ?? 30,
+    // Entry is attempted far less often than exits are checked: a missed entry costs
+    // an opportunity, a missed exit costs money.
+    entryIntervalSec:   u.spot?.entryIntervalSec   ?? 300,
   },
 
   // ─── Execution venues ────────────────────────────────────────
