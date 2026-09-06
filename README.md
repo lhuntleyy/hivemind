@@ -19,7 +19,7 @@
 | Swap slippage | no parameter sent at all | clamped to [50, 500] bps and surfaced in the result |
 | Spot | none | GMGN signals + Jupiter execution, inverted payoff, off by default |
 | Dry run | a stub that recorded nothing | paper trading in a separate ledger, priced off live quotes |
-| Tests | `node --check` (syntax only) | 194 unit tests + an HTTP smoke test |
+| Tests | `node --check` (syntax only) | 201 unit tests + an HTTP smoke test |
 
 The measured effect on the swarm feed: of the 4 lessons Meridian injects into its screener prompt, **3 are test data** (`TEST-SOL … Reason: test close`). Run `node scripts/compare-pipelines.js --live` to see it.
 

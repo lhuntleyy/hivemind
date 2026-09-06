@@ -594,6 +594,41 @@ export async function discoverPools({
  */
 export async function getTopCandidates({ limit = 10 } = {}) {
   const { config } = await import("../config.js");
+
+  // Candidate SOURCING is switchable; everything downstream (filters, scoring, the
+  // deploy safety checks) is identical either way.
+  //
+  // This routing used to be missing: config.screening.source existed, the control panel
+  // offered a "meteora | gmgn" dropdown for it, and nothing read the value. The setting
+  // looked configured and did nothing — the same failure mode as a risk limit that
+  // silently resolves to undefined.
+  if (config.screening.source === "gmgn") {
+    const { hasGmgnApiKey, discoverGmgnPools } = await import("./gmgn.js");
+    if (!hasGmgnApiKey()) {
+      const { log } = await import("../logger.js");
+      log("screening_warn", "screeningSource=gmgn but no GMGN_API_KEY — falling back to Meteora discovery.");
+    } else {
+      const gmgn = await discoverGmgnPools({ limit });
+      const { getMyPositions } = await import("./dlmm.js");
+      const { positions } = await getMyPositions();
+      const occupied = new Set(positions.map((p) => p.pool));
+      const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
+
+      // GMGN's pipeline has already applied its own KOL / rug / bundler / indicator
+      // filters. The only thing left is to not re-enter something we already hold.
+      const candidates = (gmgn.pools || []).filter(
+        (c) => c?.pool && !occupied.has(c.pool) && !occupiedMints.has(c.base?.mint),
+      );
+      return {
+        source: "gmgn",
+        count: candidates.length,
+        candidates: candidates.slice(0, limit),
+        stage_counts: gmgn.stage_counts ?? null,
+        filtered_examples: (gmgn.filtered_examples || []).slice(0, 10),
+      };
+    }
+  }
+
   const discovery = await discoverPools({ page_size: 50 });
   const { pools } = discovery;
   const filteredOut = Array.isArray(discovery.filtered_examples) ? [...discovery.filtered_examples] : [];
