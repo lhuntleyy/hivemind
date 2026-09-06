@@ -509,10 +509,12 @@ $("#btn-test-llm").onclick = async () => {
       baseUrl: $("#llm-baseurl").value.trim(),
       apiKey: $("#llm-key").value.trim(),
     }) });
+    const tools = r.tool_calling === true ? ' &middot; <span class="pos">tool calling OK</span>'
+      : r.tool_calling === false ? ' &middot; <span class="neg">NO tool calling</span>' : "";
     $("#llm-result").innerHTML = r.ok
-      ? '<span class="pos">OK &mdash; ' + esc(r.label || r.provider) + (r.model_count ? " (" + r.model_count + " models)" : "") + "</span>" +
+      ? '<span class="pos">OK &mdash; ' + esc(r.label || r.provider) + (r.model_count ? " (" + r.model_count + " models)" : "") + "</span>" + tools +
         (r.warning ? '<br><span class="warnc">' + esc(r.warning) + "</span>" : "")
-      : '<span class="neg">FAILED &mdash; ' + esc(r.error || "unknown error") + "</span>";
+      : '<span class="neg">FAILED &mdash; ' + esc(r.error || "unknown error") + "</span>" + tools;
   } catch (err) {
     $("#llm-result").innerHTML = '<span class="neg">' + esc(err.message) + "</span>";
   }

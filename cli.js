@@ -620,7 +620,11 @@ switch (subcommand) {
       try { return JSON.parse(fs.readFileSync("./user-config.json", "utf8")); } catch { return {}; }
     })();
     if (action === "test") {
-      out(await testLlmConnection(uc));
+      const { config } = await import("./config.js");
+      const model = flags.query || config.llm.screeningModel || config.llm.generalModel;
+      // checkTools, because "the endpoint is reachable" is not the same as "this model
+      // can run the agent". Every cycle here is a tool call.
+      out(await testLlmConnection(uc, { model, checkTools: !!model }));
     } else if (action === "providers") {
       out(Object.fromEntries(Object.entries(PROVIDERS).map(([id, p]) =>
         [id, { label: p.label, baseUrl: p.baseUrl, keyEnv: p.keyEnv, exampleModel: p.exampleModel }])));

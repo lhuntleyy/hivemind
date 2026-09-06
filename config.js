@@ -271,7 +271,10 @@ export const config = {
 
   // ─── LLM Settings ──────────────────────
   llm: {
-    temperature: u.temperature ?? 0.373,
+    // 2 decimals: some OpenAI-compatible gateways validate the precision and reject
+    // more (LiteLLM in front of GLM returns a 400 naming the parameter). agent.js
+    // rounds defensively too, but shipping a value that fails is not a default.
+    temperature: u.temperature ?? 0.37,
     maxTokens:   u.maxTokens   ?? 4096,
     maxSteps:    u.maxSteps    ?? 20,
     // Provider / endpoint / key. Resolved live by llm-providers.js on every request —

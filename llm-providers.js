@@ -189,11 +189,72 @@ export function resolveLlm(userConfig = {}) {
 }
 
 /**
+ * Can this model actually call tools?
+ *
+ * THE most likely misconfiguration for this agent, and the hardest to read from the
+ * error. Every cycle is a tool call, so a model without function-calling support cannot
+ * run it at all — but gateways report that badly. A LiteLLM front end returned:
+ *
+ *   plain request        -> 200, empty content
+ *   same request + tools -> 404 litellm.NotFoundError ... Received Model Group=glm-5.2
+ *
+ * A 404 naming a model that IS in /models sends you hunting for a typo that is not
+ * there. This probes with a one-token request carrying a trivial tool and reports the
+ * capability directly.
+ *
+ * @returns {Promise<{supported: boolean, reason?: string}>}
+ */
+export async function probeToolSupport({ baseUrl, apiKey, model }, { timeoutMs = 20000, fetchImpl = globalThis.fetch } = {}) {
+  const body = {
+    model,
+    messages: [{ role: "user", content: "ping" }],
+    max_tokens: 8,
+    tools: [{
+      type: "function",
+      function: { name: "noop", description: "does nothing", parameters: { type: "object", properties: {} } },
+    }],
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (res.ok) return { supported: true };
+
+    const text = await res.text().catch(() => "");
+    // A 404 or 400 on a request that differs ONLY by the tools field is the signature
+    // of a model without function calling, whatever the status code says.
+    if (res.status === 404 || res.status === 400) {
+      return {
+        supported: false,
+        reason:
+          `The model "${model}" rejected a request carrying tools (HTTP ${res.status}). ` +
+          `This agent calls a tool on every cycle, so it cannot run on a model without ` +
+          `function-calling support. Pick a tool-capable model.`,
+        raw: text.slice(0, 300),
+      };
+    }
+    return { supported: null, reason: `Tool probe returned HTTP ${res.status}; capability unknown.`, raw: text.slice(0, 300) };
+  } catch (error) {
+    const msg = error.name === "AbortError" ? `no response within ${timeoutMs}ms` : error.message;
+    return { supported: null, reason: `Tool probe failed: ${msg}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Live reachability + auth check. Used by the control panel's "Test connection"
  * button and at boot, so a bad key surfaces immediately instead of at the first
  * tool call in the middle of a management cycle.
  */
-export async function testLlmConnection(userConfig = {}, { timeoutMs = 8000, fetchImpl = globalThis.fetch } = {}) {
+export async function testLlmConnection(userConfig = {}, { timeoutMs = 8000, fetchImpl = globalThis.fetch, model = null, checkTools = false } = {}) {
   const r = resolveLlm(userConfig);
   if (!r.ok) return { ok: false, provider: r.provider, error: r.problems.join(" "), problems: r.problems };
 
@@ -215,7 +276,32 @@ export async function testLlmConnection(userConfig = {}, { timeoutMs = 8000, fet
     }
     const body = await res.json().catch(() => null);
     const models = Array.isArray(body?.data) ? body.data.map((m) => m.id).filter(Boolean) : null;
-    return { ok: true, provider: r.provider, label: r.label, baseUrl: r.baseUrl, models: models ? models.slice(0, 200) : null, model_count: models?.length ?? null };
+
+    const result = {
+      ok: true,
+      provider: r.provider,
+      label: r.label,
+      baseUrl: r.baseUrl,
+      models: models ? models.slice(0, 200) : null,
+      model_count: models?.length ?? null,
+    };
+
+    // Reaching the endpoint is not the same as being able to run this agent.
+    if (checkTools && model) {
+      const probe = await probeToolSupport({ baseUrl: r.baseUrl, apiKey: r.apiKey, model }, { fetchImpl });
+      result.model = model;
+      result.tool_calling = probe.supported;
+      if (probe.supported === false) {
+        result.ok = false;
+        result.error = probe.reason;
+      } else if (probe.supported === null) {
+        result.warning = probe.reason;
+      }
+      if (models && !models.includes(model)) {
+        result.warning = `"${model}" is not in this endpoint's model list.` + (result.warning ? ` ${result.warning}` : "");
+      }
+    }
+    return result;
   } catch (error) {
     const msg = error.name === "AbortError" ? `No response within ${timeoutMs}ms` : error.message;
     return { ok: false, provider: r.provider, error: msg };

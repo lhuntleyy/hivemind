@@ -510,7 +510,8 @@ async function handleApi(req, res, url) {
     if (body.baseUrl) probe.llmBaseUrl = String(body.baseUrl);
     if (body.apiKey && !/\*{4,}/.test(String(body.apiKey))) probe.llmApiKey = String(body.apiKey);
 
-    const result = await testLlmConnection(probe);
+    const model = body.model || readUserConfig().screeningModel || config.llm.screeningModel;
+    const result = await testLlmConnection(probe, { model, checkTools: !!model });
     // Never echo the key back, even inside an error string from the vendor.
     if (result.error && probe.llmApiKey) {
       result.error = String(result.error).split(probe.llmApiKey).join("<key>");

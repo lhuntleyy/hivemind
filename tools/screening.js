@@ -619,10 +619,13 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       const candidates = (gmgn.pools || []).filter(
         (c) => c?.pool && !occupied.has(c.pool) && !occupiedMints.has(c.base?.mint),
       );
+      // Same field names as the Meteora path — callers must not have to know which
+      // source produced the result.
       return {
         source: "gmgn",
-        count: candidates.length,
         candidates: candidates.slice(0, limit),
+        total_eligible: candidates.length,
+        total_screened: gmgn.total ?? (gmgn.pools || []).length,
         stage_counts: gmgn.stage_counts ?? null,
         filtered_examples: (gmgn.filtered_examples || []).slice(0, 10),
       };
@@ -753,7 +756,13 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   }
 
   return {
+    source: "meteora",
     candidates: eligible,
+    // index.js prints `${total_eligible} eligible from ${total_screened} screened`.
+    // This field was never returned, so the banner read "undefined eligible from N
+    // screened" on every startup — the kind of visible-but-ignored breakage that
+    // trains an operator to stop reading their own logs.
+    total_eligible: eligible.length,
     total_screened: pools.length,
     filtered_examples: filteredOut.slice(0, 3),
   };

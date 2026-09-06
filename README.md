@@ -19,7 +19,7 @@
 | Swap slippage | no parameter sent at all | clamped to [50, 500] bps and surfaced in the result |
 | Spot | none | GMGN signals + Jupiter execution, inverted payoff, off by default |
 | Dry run | a stub that recorded nothing | paper trading in a separate ledger, priced off live quotes |
-| Tests | `node --check` (syntax only) | 209 unit tests, a boot test and an HTTP smoke test |
+| Tests | `node --check` (syntax only) | 232 unit tests, a boot test and an HTTP smoke test |
 
 The measured effect on the swarm feed: of the 4 lessons Meridian injects into its screener prompt, **3 are test data** (`TEST-SOL … Reason: test close`). Run `node scripts/compare-pipelines.js --live` to see it.
 
@@ -261,12 +261,27 @@ node cli.js llm providers
 ## Tests
 
 ```bash
-npm test                  # 209 unit tests
+npm test                  # 232 unit tests
 npm run smoke:panel       # control panel over real HTTP, including the breaker gate
 node scripts/compare-pipelines.js --live   # Meridian vs Hivemind on live swarm data
 ```
 
 ---
+
+## LLM troubleshooting
+
+Most "the agent does nothing" reports are one of three things. Check the model first:
+
+```bash
+node cli.js llm test                        # the configured model
+node cli.js llm test --query claude-sonnet-5  # a specific one
+```
+
+| Symptom | Cause |
+|---|---|
+| `404 Not found` on a model that IS in `/models` | the model has no function calling. Every cycle here is a tool call, so it cannot run. `llm test` reports `tool_calling: false`. |
+| `400 ... temperature参数非法` | the gateway limits decimal precision. Temperature is rounded to 2 dp before sending, and a named-parameter rejection is retried without that parameter. |
+| `Empty response N/3` then a clear error | the model returned nothing. If `finish_reason=length` the budget is raised automatically (2048 → 16384); a reasoning model can spend the whole budget thinking before it writes anything. |
 
 ## Known limitations
 

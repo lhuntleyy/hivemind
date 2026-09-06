@@ -194,6 +194,33 @@ function isToolChoiceRequiredError(error) {
   return /tool_choice/i.test(message) && /required/i.test(message);
 }
 
+/** Clamp to a valid range and 2 decimals. See the call site for why the precision matters. */
+export function roundTemperature(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0.4;
+  return Math.round(Math.min(2, Math.max(0, n)) * 100) / 100;
+}
+
+/**
+ * Does this 400 name a specific request parameter as invalid?
+ *
+ * Gateways in front of non-OpenAI models (LiteLLM, one-api, and the various Chinese
+ * model proxies) enforce their own parameter rules and reject the request outright
+ * rather than clamping. Retrying without the offending optional parameter turns a dead
+ * cycle into a completed one; the alternative is the agent doing nothing at all until
+ * someone reads the log.
+ *
+ * @returns {string|null} the parameter to drop
+ */
+export function rejectedParameter(error) {
+  const message = String(error?.message || error?.error?.message || error || "");
+  if (!/400|bad ?request|invalid|非法|不合法/i.test(message)) return null;
+  for (const param of ["temperature", "top_p", "frequency_penalty", "presence_penalty", "max_tokens", "parallel_tool_calls"]) {
+    if (new RegExp(`\\b${param}\\b`).test(message)) return param;
+  }
+  return null;
+}
+
 function isThinkingModeToolChoiceError(error) {
   const message = String(error?.message || error?.error?.message || error || "");
   return /thinking mode does not support/i.test(message) && /tool_choice/i.test(message);
@@ -206,6 +233,15 @@ function isThinkingModeToolChoiceError(error) {
  * @param {number} maxSteps - Safety limit on iterations (default 20)
  * @returns {string} - The agent's final text response
  */
+// Consecutive empty assistant responses before giving up. Low on purpose: an empty
+// response is almost always a capability mismatch (no tool calling, or a thinking model
+// whose text lands in a field this client does not read), not bad luck.
+export const MAX_EMPTY_RESPONSES = 3;
+
+// Ceiling for the automatic budget growth above. Generous enough for a reasoning model
+// to think and then answer, bounded so a runaway cannot bill an unlimited response.
+export const MAX_TOKEN_BUDGET = 16384;
+
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
   const { interactive = false, onToolStart = null, onToolFinish = null } = options;
   // Build dynamic system prompt with current portfolio state
@@ -251,8 +287,14 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   let noToolRetryCount = 0;
   // Stays true for the whole run once a thinking-mode provider rejects tool_choice
   let omitToolChoice = false;
+  // Parameters a gateway rejected this run. Sticky for the whole run so we do not
+  // re-send something we already know it refuses on every subsequent step.
+  const droppedParams = new Set();
 
   let emptyStreak = 0;
+  // Output budget for this run. Starts at the caller's figure and grows if the model
+  // truncates before producing content (reasoning models need far more headroom).
+  let tokenBudget = maxOutputTokens ?? config.llm.maxTokens;
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
@@ -277,9 +319,16 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             model: usedModel,
             messages,
             tools: getToolsForRole(agentType, goal),
-            temperature: config.llm.temperature,
-            max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+            // Rounded to 2 decimals. Some OpenAI-compatible gateways validate the
+            // precision and reject more — LiteLLM in front of GLM returns
+            //   400 ... temperature参数非法：限制小数点[2]位
+            // ("temperature is invalid: limited to 2 decimal places"). Meridian's
+            // default was 0.373, so every request to such a gateway failed. The
+            // third decimal carries no meaningful sampling difference anyway.
+            temperature: roundTemperature(config.llm.temperature),
+            max_tokens: tokenBudget,
           };
+          for (const p of droppedParams) delete reqParams[p];
           if (!omitToolChoice) reqParams.tool_choice = toolChoice;
           response = await getClient().chat.completions.create(reqParams);
         } catch (error) {
@@ -299,6 +348,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           if (!omitToolChoice && isThinkingModeToolChoiceError(error)) {
             omitToolChoice = true;
             log("agent", "Provider thinking mode does not support tool_choice — retrying without it");
+            attempt -= 1;
+            continue;
+          }
+          // A gateway rejected one named parameter. Drop it and retry rather than
+          // losing the whole cycle over an optional sampling knob.
+          const badParam = rejectedParameter(error);
+          if (badParam && !droppedParams.has(badParam)) {
+            droppedParams.add(badParam);
+            log("agent", `Provider rejected "${badParam}" — retrying without it (${error.message?.slice(0, 120)})`);
             attempt -= 1;
             continue;
           }
@@ -350,12 +408,51 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       // If the model didn't call any tools, it's done
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        // Hermes sometimes returns null content — pop the empty message and retry once
+        // Some providers return an assistant message with no content and no tool calls.
+        //
+        // Meridian popped it and `continue`d with no cap and no delay — and the
+        // `emptyStreak` counter it declared for this was never incremented or read. A
+        // model that returns empty twice therefore burned all 20 steps in under a
+        // second, hammering the provider, and reported "Max steps reached" as if it had
+        // been working. Cap it, back off, and say what actually happened.
         if (!msg.content) {
           messages.pop(); // remove the empty assistant message
-          log("agent", "Empty response, retrying...");
+
+          // finish_reason=length with EMPTY content is not a flaky response — it is a
+          // truncation. Reasoning models spend the output budget on internal thinking
+          // before emitting anything, so a budget that is fine for a non-reasoning
+          // model produces literally nothing. Meridian passed 2048 for cycles and had
+          // no way to tell you; the symptom was an endless "Empty response, retrying".
+          // Grow the budget and try again instead of burning the streak.
+          if (response.choices[0]?.finish_reason === "length" && tokenBudget < MAX_TOKEN_BUDGET) {
+            const grown = Math.min(MAX_TOKEN_BUDGET, tokenBudget * 2);
+            log("agent", `Output truncated before any content (finish_reason=length) — raising max_tokens ${tokenBudget} → ${grown}`);
+            tokenBudget = grown;
+            continue;
+          }
+
+          emptyStreak += 1;
+
+          if (emptyStreak >= MAX_EMPTY_RESPONSES) {
+            const finish = response.choices[0]?.finish_reason ?? "unknown";
+            const detail = `finish_reason=${finish}, model=${usedModel}`;
+            log("error", `Model returned ${emptyStreak} empty responses in a row (${detail})`);
+            return {
+              content:
+                `The model returned ${emptyStreak} empty responses in a row (${detail}). ` +
+                `That usually means the model cannot use tools, or is a "thinking" model whose ` +
+                `output landed in a field this client does not read. Try a different model: ` +
+                `node cli.js llm test --query <model>`,
+              userMessage: goal,
+            };
+          }
+
+          log("agent", `Empty response ${emptyStreak}/${MAX_EMPTY_RESPONSES}, retrying...`);
+          await sleep(Math.min(4000, 250 * 2 ** emptyStreak));
           continue;
         }
+        // A real answer resets the streak — only CONSECUTIVE empties are a failure.
+        emptyStreak = 0;
         if (mustUseRealTool && !sawToolCall) {
           noToolRetryCount += 1;
           messages.pop();
