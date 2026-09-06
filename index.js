@@ -656,7 +656,12 @@ IMPORTANT:
         onToolFinish: async ({ name, result, success }) => {
           if (name === "deploy_position") {
             deployAttempted = true;
-            deploySucceeded = Boolean(success && result?.success !== false && !result?.error && !result?.blocked);
+            // A dry run must not count as a deploy: it would reset the deploy-drought
+            // counter, write a "deployed" decision, and make the cycle report a
+            // position that does not exist.
+            deploySucceeded = Boolean(
+              success && result?.success !== false && !result?.error && !result?.blocked && !result?.dry_run,
+            );
           }
           await liveMessage?.toolFinish(name, result, success);
         },

@@ -246,6 +246,8 @@ function summarizeToolResult(name, result) {
   if (!result) return "";
   if (result.error) return result.error;
   if (result.reason && result.blocked) return result.reason;
+  // Checked before the switch so no tool can accidentally report a dry run as done.
+  if (result.dry_run) return "DRY RUN — nothing was sent";
   switch (name) {
     case "deploy_position":
       return result.position ? `position ${String(result.position).slice(0, 8)}...` : "submitted";

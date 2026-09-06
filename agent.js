@@ -311,7 +311,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
-      let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
+      // Force a tool call on step 0 for action intents, AND on any step after we have
+      // already rejected a text-only answer. Previously the constraint applied only on
+      // step 0: after rejecting a no-tool reply we injected a reminder but dropped
+      // tool_choice back to "auto" for the retry — relaxing the requirement at exactly
+      // the moment the model had just demonstrated it needs it.
+      let toolChoice =
+        ((step === 0 || noToolRetryCount > 0) && (ACTION_INTENTS.test(goal) || mustUseRealTool))
+          ? "required"
+          : "auto";
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -458,8 +466,12 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           messages.pop();
           log("agent", `Rejected no-tool final answer (${noToolRetryCount}/2) for tool-required request`);
           if (noToolRetryCount >= 2) {
+            log("error", `Model made no tool call after ${noToolRetryCount} attempts with tool_choice=required (model=${usedModel})`);
             return {
-              content: "I couldn't complete that reliably because no tool call was made. Please retry after checking the logs.",
+              content:
+                `No tool call was made after ${noToolRetryCount} attempts, including with tool_choice="required" ` +
+                `(model=${usedModel}). Nothing was executed, so nothing is reported as done. ` +
+                `Some models ignore forced tool choice — verify with: node cli.js llm test --query ${usedModel}`,
               userMessage: goal,
             };
           }

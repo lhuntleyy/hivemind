@@ -667,6 +667,15 @@ export async function executeTool(name, args) {
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
 
+    // A dry run is NOT a completed action.
+    //
+    // deployPosition returns { dry_run: true, would_deploy: {...} } with no
+    // `success: false`, so `success` above is true and every side effect below fired:
+    // Telegram announced "Deployed TAO-SOL / Position: undefined / Tx: undefined", the
+    // screening cycle recorded a deploy that never happened, and the auto-swap path
+    // ran. Reporting a trade that did not occur is worse than reporting nothing.
+    const isDryRun = result?.dry_run === true;
+
     logAction({
       tool: name,
       args,
@@ -675,7 +684,7 @@ export async function executeTool(name, args) {
       success,
     });
 
-    if (success) {
+    if (success && !isDryRun) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
