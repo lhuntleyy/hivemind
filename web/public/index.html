@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hivemind Control</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+    --fg:#e6edf3; --dim:#8b98a5; --accent:#3fb950; --warn:#d29922; --danger:#f85149;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#f6f8fa; --panel:#fff; --panel2:#f0f3f6; --line:#d8dee4; --fg:#1f2328; --dim:#636c76; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;letter-spacing:.3px}
+  h1 span{color:var(--dim);font-weight:400}
+  nav{display:flex;gap:4px;margin-left:auto;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}
+  nav button:hover{color:var(--fg);background:var(--panel2)}
+  nav button.on{color:var(--fg);background:var(--panel2);border-color:var(--line)}
+  main{padding:20px;max-width:1240px;margin:0 auto}
+  section{display:none} section.on{display:block}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);font-weight:600}
+  .stat{font-size:24px;font-weight:600;font-family:var(--mono)}
+  .sub{color:var(--dim);font-size:12px;margin-top:2px}
+  .pos{color:var(--accent)} .neg{color:var(--danger)} .warnc{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px;border-bottom:1px solid var(--line)}
+  td{padding:8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px}
+  tr:last-child td{border-bottom:none}
+  .scroll{overflow-x:auto}
+  .banner{padding:10px 14px;border-radius:8px;margin-bottom:10px;font-size:13px;border:1px solid}
+  .banner.error{background:rgba(248,81,73,.1);border-color:var(--danger);color:var(--danger)}
+  .banner.warn{background:rgba(210,153,34,.1);border-color:var(--warn);color:var(--warn)}
+  .banner.ok{background:rgba(63,185,80,.1);border-color:var(--accent);color:var(--accent)}
+  button.act{background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px}
+  button.act:hover{border-color:var(--dim)}
+  button.act.danger{border-color:var(--danger);color:var(--danger)}
+  button.act.primary{background:var(--accent);border-color:var(--accent);color:#08130c;font-weight:600}
+  label{display:block;margin-bottom:12px}
+  label .lb{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+  input,select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:7px 9px;border-radius:6px;font:inherit;font-family:var(--mono);font-size:12px}
+  input[type=checkbox]{width:auto}
+  fieldset{border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 14px;background:var(--panel)}
+  legend{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);font-weight:600;padding:0 6px}
+  .cols{display:grid;gap:0 16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+  .cal{display:grid;grid-template-columns:repeat(auto-fill,14px);gap:3px}
+  .cal i{width:14px;height:14px;border-radius:3px;background:var(--panel2);display:block;cursor:default}
+  .legend{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:11px;margin-top:10px}
+  .legend i{width:12px;height:12px;border-radius:3px;display:block}
+  pre{font-family:var(--mono);font-size:11px;white-space:pre-wrap;background:var(--panel2);padding:12px;border-radius:8px;overflow-x:auto;margin:0;line-height:1.5}
+  .muted{color:var(--dim)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .pill{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
+  .pill.live{border-color:var(--danger);color:var(--danger)}
+  .pill.dry{border-color:var(--accent);color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Hivemind <span>control</span></h1>
+  <span id="mode" class="pill">…</span>
+  <span id="clock" class="muted" style="font-size:12px"></span>
+  <nav>
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="positions">Positions</button>
+    <button data-tab="calendar">Calendar</button>
+    <button data-tab="learning">Learning</button>
+    <button data-tab="swarm">Swarm</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <div id="banners"></div>
+
+  <section id="overview" class="on">
+    <div class="grid">
+      <div class="card"><h3>Wallet</h3><div class="stat" id="w-sol">—</div><div class="sub" id="w-usd"></div></div>
+      <div class="card"><h3>Open positions</h3><div class="stat" id="w-pos">—</div><div class="sub" id="w-posval"></div></div>
+      <div class="card"><h3>Realized today</h3><div class="stat" id="w-day">—</div><div class="sub" id="w-closes"></div></div>
+      <div class="card"><h3>Drawdown</h3><div class="stat" id="w-dd">—</div><div class="sub" id="w-peak"></div></div>
+      <div class="card"><h3>All-time</h3><div class="stat" id="w-all">—</div><div class="sub" id="w-wr"></div></div>
+      <div class="card"><h3>Risk breaker</h3><div class="stat" id="w-risk">—</div><div class="sub" id="w-risksub"></div></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Breaker control</h3>
+      <div class="row">
+        <button class="act danger" id="btn-halt">Halt new deploys</button>
+        <button class="act" id="btn-resume">Resume</button>
+        <span class="muted" style="font-size:12px">Halting never blocks closing or claiming.</span>
+      </div>
+      <div class="sub" id="risk-detail" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>Recent decisions</h3><div class="scroll"><table id="decisions"><tbody><tr><td class="muted">loading…</td></tr></tbody></table></div></div>
+  </section>
+
+  <section id="positions">
+    <div class="card"><h3>Open positions</h3><div class="scroll">
+      <table><thead><tr><th>Pair</th><th>PnL</th><th>Value</th><th>Unclaimed</th><th>Range</th><th>Age</th><th>Fee/TVL 24h</th></tr></thead>
+      <tbody id="pos-body"><tr><td colspan="7" class="muted">loading…</td></tr></tbody></table>
+    </div></div>
+    <div class="card" style="margin-top:14px">
+      <h3>Spot positions <span id="spot-state" class="pill">disabled</span></h3>
+      <div class="scroll">
+        <table><thead><tr><th>Token</th><th>PnL</th><th>In (SOL)</th><th>Entry</th><th>Peak</th><th>Held</th><th></th></tr></thead>
+        <tbody id="spot-body"><tr><td colspan="7" class="muted">spot venue is off</td></tr></tbody></table>
+      </div>
+      <div class="sub" id="spot-summary" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px"><h3>Token balances</h3><div class="scroll">
+      <table><thead><tr><th>Token</th><th>Balance</th><th>USD</th></tr></thead><tbody id="tok-body"></tbody></table>
+    </div></div>
+  </section>
+
+  <section id="calendar">
+    <div class="card">
+      <h3>Portfolio calendar — realized PnL per day</h3>
+      <div class="row" style="margin-bottom:12px">
+        <select id="cal-days" style="width:auto"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">365 days</option></select>
+        <span id="cal-total" class="muted"></span>
+      </div>
+      <div class="cal" id="cal"></div>
+      <div class="legend"><span>loss</span><i style="background:var(--danger)"></i><i style="background:var(--panel2)"></i><i style="background:var(--accent)"></i><span>profit</span><span style="margin-left:10px">hover a cell for detail</span></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Daily breakdown</h3><div class="scroll">
+      <table><thead><tr><th>Day</th><th>Realized PnL</th><th>Fees</th><th>Closes</th><th>Win rate</th></tr></thead><tbody id="cal-body"></tbody></table>
+    </div></div>
+  </section>
+
+  <section id="learning">
+    <div class="card"><h3>Your own playbook (Wilson 95% lower bound)</h3><pre id="playbook">loading…</pre></div>
+    <div class="card" style="margin-top:14px"><h3>Threshold evolution</h3><div id="evo" class="sub"></div></div>
+  </section>
+
+  <section id="swarm">
+    <div class="card">
+      <h3>Swarm strategy intel</h3>
+      <div class="row" style="margin-bottom:12px">
+        <button class="act" id="btn-pull">Pull now</button>
+        <span class="muted" id="swarm-meta"></span>
+      </div>
+      <pre id="swarm-out">loading…</pre>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Feature bands</h3><div class="scroll">
+      <table><thead><tr><th>Pattern</th><th>Win rate</th><th>Avg PnL</th><th>Pools</th><th>Obs</th></tr></thead><tbody id="band-body"></tbody></table>
+    </div></div>
+  </section>
+
+  <section id="settings">
+    <div id="set-msg"></div>
+    <fieldset><legend>Secrets — stored in .env, never displayed back</legend>
+      <div class="cols" id="secrets"></div>
+      <button class="act primary" id="btn-secrets">Save secrets</button>
+      <div class="sub" style="margin-top:8px">Leave a field blank to keep the current value. Wallet and RPC changes need a process restart.</div>
+    </fieldset>
+    <fieldset><legend>LLM provider</legend>
+      <div class="cols">
+        <label><span class="lb">Provider</span><select id="llm-provider"></select></label>
+        <label><span class="lb">Base URL (blank = provider default)</span><input id="llm-baseurl" placeholder="https://..."></label>
+        <label><span class="lb">API key (blank = keep current)</span><input id="llm-key" type="password" autocomplete="off" placeholder="paste key"></label>
+      </div>
+      <div class="row">
+        <button class="act" id="btn-test-llm">Test connection</button>
+        <button class="act primary" id="btn-save-llm">Save provider</button>
+        <span class="muted" id="llm-hint" style="font-size:12px"></span>
+      </div>
+      <div id="llm-result" class="sub" style="margin-top:10px"></div>
+    </fieldset>
+
+    <fieldset><legend>Settings</legend>
+      <div class="cols" id="fields"></div>
+      <button class="act primary" id="btn-save">Save settings</button>
+    </fieldset>
+  </section>
+</main>
+
+<script>
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => [...(r || document).querySelectorAll(s)];
+const fmt = (n, d) => (n == null || !isFinite(n) ? "—" : Number(n).toFixed(d == null ? 2 : d));
+const sign = (n) => (n > 0 ? "pos" : n < 0 ? "neg" : "");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+async function api(path, opts) {
+  const o = opts || {};
+  o.headers = Object.assign({ "content-type": "application/json" }, o.headers || {}, TOKEN ? { "x-hivemind-token": TOKEN } : {});
+  const res = await fetch(path, o);
+  if (!res.ok && res.status !== 207) throw new Error((await res.json().catch(() => ({}))).error || ("HTTP " + res.status));
+  return res.json();
+}
+
+$$("nav button").forEach((b) => b.onclick = () => {
+  $$("nav button").forEach((x) => x.classList.toggle("on", x === b));
+  $$("section").forEach((s) => s.classList.toggle("on", s.id === b.dataset.tab));
+  if (b.dataset.tab === "calendar") loadCalendar();
+  if (b.dataset.tab === "swarm") loadSwarm();
+  if (b.dataset.tab === "settings") loadSettings();
+});
+
+// ── overview ────────────────────────────────────────────────────
+async function loadStatus() {
+  let s;
+  try { s = await api("/api/status"); }
+  catch (e) { $("#banners").innerHTML = '<div class="banner error">Cannot reach the agent: ' + esc(e.message) + "</div>"; return; }
+
+  $("#mode").textContent = s.dry_run ? "DRY RUN" : "LIVE";
+  $("#mode").className = "pill " + (s.dry_run ? "dry" : "live");
+  $("#clock").textContent = new Date(s.timestamp).toLocaleTimeString();
+
+  const w = s.wallet || {};
+  $("#w-sol").textContent = fmt(w.sol, 3) + " SOL";
+  $("#w-usd").textContent = w.sol_price ? "$" + fmt(w.sol * w.sol_price) + " · SOL $" + fmt(w.sol_price) : (w.error || "");
+
+  const ps = s.positions || [];
+  $("#w-pos").textContent = ps.length;
+  const pv = ps.reduce((a, p) => a + (Number(p.total_value_usd) || 0) + (Number(p.unclaimed_fees_usd) || 0), 0);
+  $("#w-posval").textContent = pv ? "$" + fmt(pv) + " deployed" : "nothing open";
+
+  const r = s.risk || {};
+  const d = Number(r.day_realized_pnl_sol) || 0;
+  $("#w-day").innerHTML = '<span class="' + sign(d) + '">' + (d > 0 ? "+" : "") + fmt(d, 4) + " SOL</span>";
+  $("#w-closes").textContent = (r.day_closes || 0) + " closes · streak " + (r.consecutive_losses || 0) + " loss";
+  $("#w-dd").innerHTML = r.drawdown_pct == null ? "—" : '<span class="' + (r.drawdown_pct > 15 ? "neg" : "") + '">' + fmt(r.drawdown_pct, 1) + "%</span>";
+  $("#w-peak").textContent = r.peak_equity_sol ? "peak " + fmt(r.peak_equity_sol, 3) + " SOL" : "no equity reading yet";
+
+  const perf = s.performance;
+  $("#w-all").innerHTML = perf ? '<span class="' + sign(perf.total_pnl_usd) + '">$' + fmt(perf.total_pnl_usd) + "</span>" : "—";
+  $("#w-wr").textContent = perf ? perf.win_rate_pct + "% win · " + perf.total_positions_closed + " closed" : "no closed positions";
+
+  $("#w-risk").innerHTML = r.halted ? '<span class="neg">HALTED</span>' : '<span class="pos">ARMED</span>';
+  if (r.ledger_complete === false) {
+    $("#banners").insertAdjacentHTML("beforeend",
+      '<div class="banner warn">' + r.unaccounted_closes +
+      ' position(s) closed outside the agent, so realized PnL and drawdown above are a LOWER bound on the real numbers.</div>');
+  }
+  $("#w-risksub").textContent = r.halted ? "blocked until " + (r.halted_until || "manual resume") : "limits active";
+  $("#risk-detail").innerHTML = r.halted
+    ? '<span class="neg">' + esc(r.halt_reason || "") + "</span>"
+    : "Daily loss cap " + fmt(r.limits?.maxDailyLossSol, 2) + " SOL / " + fmt(r.limits?.maxDailyLossPct, 0) +
+      "% · max " + (r.limits?.maxConsecutiveLosses ?? "—") + " consecutive losses · max drawdown " + fmt(r.limits?.maxDrawdownPct, 0) + "%";
+
+  // positions table
+  $("#pos-body").innerHTML = ps.length ? ps.map((p) => {
+    const pnl = Number(p.pnl_pct) || 0;
+    return "<tr><td>" + esc(p.pair) + "</td>" +
+      '<td class="' + sign(pnl) + '">' + (pnl > 0 ? "+" : "") + fmt(pnl) + "%" + (p.pnl_pct_suspicious ? ' <span class="warnc">?</span>' : "") + "</td>" +
+      "<td>$" + fmt(p.total_value_usd) + "</td><td>$" + fmt(p.unclaimed_fees_usd) + "</td>" +
+      "<td>" + (p.in_range ? '<span class="pos">in</span>' : '<span class="neg">out ' + (p.minutes_out_of_range || 0) + "m</span>") + "</td>" +
+      "<td>" + (p.age_minutes ?? "—") + "m</td><td>" + fmt(p.fee_per_tvl_24h) + "%</td></tr>";
+  }).join("") : '<tr><td colspan="7" class="muted">no open positions</td></tr>';
+
+  $("#tok-body").innerHTML = (w.tokens || []).map((t) =>
+    "<tr><td>" + esc(t.symbol || t.mint?.slice(0, 8)) + "</td><td>" + fmt(t.balance, 4) + "</td><td>$" + fmt(t.usd) + "</td></tr>").join("")
+    || '<tr><td colspan="3" class="muted">no token balances</td></tr>';
+
+  renderSpot(s.spot);
+
+  $("#playbook").textContent = (s.playbook && s.playbook.length)
+    ? s.playbook.map((b) => b.key.padEnd(40) + " floor " + (b.confidence_floor * 100).toFixed(0) + "%  " +
+        b.wins + "/" + b.observations + "  avgPnL " + b.avg_pnl_pct + "%  hold " + b.avg_hold_minutes + "m").join("\n")
+    : "No band has enough closed positions yet. The playbook needs at least 3 closes sharing a strategy + volatility bucket.";
+
+  const L = s.learning || {};
+  $("#evo").textContent = "Screens since last deploy: " + L.screens_since_deploy + " (thresholds relax automatically at " +
+    L.starvation_at + "). Last evolution: " + (L.last_evolved_at || "never") + ".";
+}
+
+async function loadWarnings() {
+  try {
+    const s = await api("/api/settings");
+    $("#banners").innerHTML = (s.warnings || []).map((w) => '<div class="banner ' + w.level + '">' + esc(w.text) + "</div>").join("");
+  } catch { /* status banner already covers unreachable */ }
+}
+
+async function loadDecisions() {
+  try {
+    const d = await api("/api/decisions");
+    const rows = (d.decisions || d || []).slice(0, 12);
+    $("#decisions").innerHTML = "<tbody>" + (rows.length ? rows.map((x) =>
+      "<tr><td>" + esc(String(x.ts || "").slice(5, 16)) + "</td><td>" + esc(x.type) + "</td><td>" +
+      esc(x.summary || x.reason || "") + "</td></tr>").join("") : '<tr><td class="muted">no decisions logged</td></tr>') + "</tbody>";
+  } catch { $("#decisions").innerHTML = '<tbody><tr><td class="muted">unavailable</td></tr></tbody>'; }
+}
+
+$("#btn-halt").onclick = async () => {
+  if (!confirm("Halt new deploys? Closing and claiming stay available.")) return;
+  await api("/api/risk/halt", { method: "POST", body: JSON.stringify({ reason: "halted from control panel" }) });
+  loadStatus();
+};
+$("#btn-resume").onclick = async () => { await api("/api/risk/resume", { method: "POST" }); loadStatus(); };
+
+
+function renderSpot(spot) {
+  if (!spot) return;
+  const pill = $("#spot-state");
+  pill.textContent = spot.enabled ? "enabled" : "disabled";
+  pill.className = "pill " + (spot.enabled ? "dry" : "");
+
+  const open = spot.open || [];
+  $("#spot-body").innerHTML = open.length ? open.map((p) => {
+    const pnl = Number(p.last_pnl_pct);
+    return "<tr><td>" + esc(p.symbol) + "</td>" +
+      '<td class="' + sign(pnl) + '">' + (Number.isFinite(pnl) ? (pnl > 0 ? "+" : "") + fmt(pnl) + "%" : "—") + "</td>" +
+      "<td>" + fmt(p.amount_sol_in, 3) + "</td>" +
+      "<td>" + (p.entry_price_sol ? Number(p.entry_price_sol).toExponential(3) : "—") + "</td>" +
+      "<td>" + (Number.isFinite(p.peak_pnl_pct) ? fmt(p.peak_pnl_pct) + "%" : "—") + (p.trailing_active ? " 🔒" : "") + "</td>" +
+      "<td>" + Math.round((Date.now() - Date.parse(p.opened_at)) / 60000) + "m</td>" +
+      '<td><button class="act danger" data-spot-close="' + esc(p.id) + '" style="padding:3px 8px;font-size:11px">sell</button></td></tr>';
+  }).join("") : '<tr><td colspan="7" class="muted">' + (spot.enabled ? "no open spot positions" : "spot venue is off") + "</td></tr>";
+
+  const sm = spot.summary;
+  $("#spot-summary").innerHTML = sm && sm.closed
+    ? "Closed " + sm.closed + " &middot; total <span class=\"" + sign(sm.total_pnl_sol) + "\">" + fmt(sm.total_pnl_sol, 4) +
+      " SOL</span> &middot; " + sm.win_rate_pct + "% win &middot; avg " + sm.avg_pnl_pct + "%"
+    : (spot.error ? '<span class="neg">' + esc(spot.error) + "</span>" : "No closed spot trades yet.");
+}
+
+document.addEventListener("click", async (e) => {
+  const id = e.target && e.target.dataset && e.target.dataset.spotClose;
+  if (!id) return;
+  if (!confirm("Sell this spot position now?")) return;
+  e.target.disabled = true;
+  const r = await api("/api/spot/close", { method: "POST", body: JSON.stringify({ id }) });
+  if (!r.success && !r.dry_run) alert("Close failed: " + (r.error || "unknown"));
+  loadStatus();
+});
+
+// ── calendar ────────────────────────────────────────────────────
+async function loadCalendar() {
+  const days = $("#cal-days").value;
+  const d = await api("/api/calendar?days=" + days);
+  const byDay = Object.fromEntries((d.calendar || []).map((x) => [x.day, x]));
+  const max = Math.max(1, ...(d.calendar || []).map((x) => Math.abs(x.pnl_usd)));
+
+  const cells = [];
+  const today = new Date();
+  for (let i = Number(days) - 1; i >= 0; i--) {
+    const dt = new Date(today.getTime() - i * 86400000);
+    const key = dt.toISOString().slice(0, 10);
+    const e = byDay[key];
+    let bg = "var(--panel2)";
+    if (e && e.pnl_usd !== 0) {
+      const a = Math.min(1, Math.abs(e.pnl_usd) / max) * 0.85 + 0.15;
+      bg = e.pnl_usd > 0 ? "rgba(63,185,80," + a.toFixed(2) + ")" : "rgba(248,81,73," + a.toFixed(2) + ")";
+    }
+    const tip = e ? key + " · $" + e.pnl_usd + " · " + e.closes + " closes" : key + " · no closes";
+    cells.push('<i style="background:' + bg + '" title="' + esc(tip) + '"></i>');
+  }
+  $("#cal").innerHTML = cells.join("");
+  const t = d.totals || {};
+  $("#cal-total").innerHTML = "Total <span class=\"" + sign(t.pnl_usd) + "\">$" + fmt(t.pnl_usd) + "</span> · " +
+    (t.closes || 0) + " closes · " + (t.win_rate_pct == null ? "—" : t.win_rate_pct + "% win");
+
+  $("#cal-body").innerHTML = (d.calendar || []).slice().reverse().map((x) =>
+    "<tr><td>" + x.day + '</td><td class="' + sign(x.pnl_usd) + '">$' + fmt(x.pnl_usd) + "</td><td>$" + fmt(x.fees_usd) +
+    "</td><td>" + x.closes + "</td><td>" + Math.round((x.wins / x.closes) * 100) + "%</td></tr>").join("")
+    || '<tr><td colspan="5" class="muted">no closed positions in this window</td></tr>';
+}
+$("#cal-days").onchange = loadCalendar;
+
+// ── swarm ───────────────────────────────────────────────────────
+async function loadSwarm() {
+  const d = await api("/api/swarm");
+  $("#swarm-meta").textContent = d.pulledAt ? "pulled " + new Date(d.pulledAt).toLocaleString() : "never pulled";
+  const i = d.intel;
+  if (!i) { $("#swarm-out").textContent = "No swarm data yet. Press Pull now."; }
+  else {
+    const sec = (title, rows) => !rows || !rows.length ? "" : "\n" + title + "\n" + rows.slice(0, 8).map((r) =>
+      "  " + (r.name + (r.params ? " " + JSON.stringify(r.params) : "")).padEnd(34) +
+      " win " + (r.win_rate * 100).toFixed(0) + "%  avgPnL " + r.avg_pnl_pct + "%  obs " + r.observations).join("\n") + "\n";
+    $("#swarm-out").textContent =
+      "Base strategies:" + sec("", i.strategies) +
+      "\nMixed deploys used by other forks:" + sec("", i.mixes) +
+      "\nStrategies we do NOT implement:" + sec("", i.named) +
+      "\nTempo variants:" + sec("", i.tempos) +
+      "\nMarket regimes:" + sec("", i.regimes) +
+      "\n" + (i.stats ? i.stats.lessons_considered + " lessons mined. Nothing here is applied automatically." : "");
+  }
+  $("#band-body").innerHTML = (d.bands || []).map((b) =>
+    "<tr><td>" + esc(b.key) + "</td><td>" + (b.win_rate * 100).toFixed(0) + "%</td><td>" + b.avg_pnl_pct +
+    "%</td><td>" + b.distinct_pools + "</td><td>" + b.observations + "</td></tr>").join("")
+    || '<tr><td colspan="5" class="muted">no bands</td></tr>';
+}
+$("#btn-pull").onclick = async () => { $("#swarm-out").textContent = "pulling…"; await api("/api/swarm/pull", { method: "POST" }); loadSwarm(); };
+
+// ── settings ────────────────────────────────────────────────────
+let SETTINGS = null;
+async function loadSettings() {
+  SETTINGS = await api("/api/settings");
+
+  $("#secrets").innerHTML = Object.entries(SETTINGS.secrets).map(([k, v]) =>
+    '<label><span class="lb">' + k + " " + (v.set ? '<span class="pos">set · ' + esc(v.preview) + "</span>" : '<span class="warnc">not set</span>') +
+    '</span><input type="password" data-secret="' + k + '" placeholder="' + (v.set ? "leave blank to keep" : "paste value") + '" autocomplete="off"></label>').join("");
+
+  $("#fields").innerHTML = Object.entries(SETTINGS.editable).map(([key, spec]) => {
+    const val = SETTINGS.values[key];
+    let input;
+    if (spec.type === "boolean") input = '<input type="checkbox" data-key="' + key + '"' + (val ? " checked" : "") + ">";
+    else if (spec.type === "enum") input = '<select data-key="' + key + '">' + spec.values.map((v) =>
+      '<option value="' + v + '"' + (String(val) === v ? " selected" : "") + ">" + v + "</option>").join("") + "</select>";
+    else input = '<input data-key="' + key + '" value="' + esc(val ?? "") + '"' +
+      (spec.type === "number" ? ' type="number" step="any"' + (spec.min != null ? ' min="' + spec.min + '"' : "") + (spec.max != null ? ' max="' + spec.max + '"' : "") : "") + ">";
+    return '<label><span class="lb">' + key + "</span>" + input + "</label>";
+  }).join("");
+
+  renderLlmPanel();
+}
+
+// ── LLM provider ────────────────────────────────────────────────
+function renderLlmPanel() {
+  const L = SETTINGS && SETTINGS.llm;
+  if (!L) return;
+  const sel = $("#llm-provider");
+  sel.innerHTML = Object.entries(L.providers).map(([id, p]) =>
+    '<option value="' + id + '"' + (id === SETTINGS.values.llmProvider ? " selected" : "") + ">" + esc(p.label) + "</option>").join("");
+  $("#llm-baseurl").value = SETTINGS.values.llmBaseUrl || "";
+  $("#llm-baseurl").placeholder = L.providers[sel.value] && L.providers[sel.value].baseUrl || "https://...";
+  updateLlmHint();
+  $("#llm-result").innerHTML = L.ok
+    ? '<span class="pos">Resolved: ' + esc(L.label) + " at " + esc(L.baseUrl) + "</span>"
+    : '<span class="neg">' + esc((L.problems || []).join(" ")) + "</span>";
+}
+
+function updateLlmHint() {
+  const L = SETTINGS && SETTINGS.llm;
+  if (!L) return;
+  const p = L.providers[$("#llm-provider").value];
+  if (!p) return;
+  $("#llm-baseurl").placeholder = p.baseUrl || "required for this provider";
+  $("#llm-hint").innerHTML = "key env: " + esc((p.keyEnv || []).join(" / ")) +
+    (p.exampleModel ? " &middot; e.g. model <code>" + esc(p.exampleModel) + "</code>" : "") +
+    (p.note ? " &middot; " + esc(p.note) : "");
+}
+
+document.addEventListener("change", (e) => { if (e.target && e.target.id === "llm-provider") updateLlmHint(); });
+
+$("#btn-test-llm").onclick = async () => {
+  $("#llm-result").textContent = "testing…";
+  try {
+    const r = await api("/api/llm/test", { method: "POST", body: JSON.stringify({
+      provider: $("#llm-provider").value,
+      baseUrl: $("#llm-baseurl").value.trim(),
+      apiKey: $("#llm-key").value.trim(),
+    }) });
+    $("#llm-result").innerHTML = r.ok
+      ? '<span class="pos">OK &mdash; ' + esc(r.label || r.provider) + (r.model_count ? " (" + r.model_count + " models)" : "") + "</span>" +
+        (r.warning ? '<br><span class="warnc">' + esc(r.warning) + "</span>" : "")
+      : '<span class="neg">FAILED &mdash; ' + esc(r.error || "unknown error") + "</span>";
+  } catch (err) {
+    $("#llm-result").innerHTML = '<span class="neg">' + esc(err.message) + "</span>";
+  }
+};
+
+$("#btn-save-llm").onclick = async () => {
+  const key = $("#llm-key").value.trim();
+  const provider = $("#llm-provider").value;
+  // The key goes to .env under the provider's own env var, so switching provider
+  // later does not overwrite a key you still need.
+  if (key) {
+    const envName = (SETTINGS.llm.providers[provider].keyEnv || ["LLM_API_KEY"])[0];
+    await api("/api/secrets", { method: "POST", body: JSON.stringify({ secrets: { [envName]: key } }) });
+    $("#llm-key").value = "";
+  }
+  const r = await api("/api/settings", { method: "POST", body: JSON.stringify({ values: {
+    llmProvider: provider,
+    llmBaseUrl: $("#llm-baseurl").value.trim(),
+  } }) });
+  const errs = Object.entries(r.errors || {});
+  $("#llm-result").innerHTML = errs.length
+    ? '<span class="neg">' + esc(errs.map(([k, v]) => k + ": " + v).join("; ")) + "</span>"
+    : '<span class="pos">Saved. Takes effect on the next cycle &mdash; no restart needed.</span>';
+  loadSettings(); loadWarnings();
+};
+
+
+$("#btn-save").onclick = async () => {
+  const values = {};
+  $$("[data-key]").forEach((el) => { values[el.dataset.key] = el.type === "checkbox" ? el.checked : el.value; });
+  const r = await api("/api/settings", { method: "POST", body: JSON.stringify({ values }) });
+  const errs = Object.entries(r.errors || {});
+  $("#set-msg").innerHTML = '<div class="banner ' + (errs.length ? "warn" : "ok") + '">Saved ' + Object.keys(r.applied).length + " setting(s)." +
+    (errs.length ? " Rejected: " + esc(errs.map(([k, v]) => k + " (" + v + ")").join(", ")) : "") + " " + esc(r.note || "") + "</div>";
+  loadSettings(); loadWarnings();
+};
+
+$("#btn-secrets").onclick = async () => {
+  const secrets = {};
+  $$("[data-secret]").forEach((el) => { if (el.value.trim()) secrets[el.dataset.secret] = el.value.trim(); });
+  if (!Object.keys(secrets).length) { $("#set-msg").innerHTML = '<div class="banner warn">Nothing to save.</div>'; return; }
+  const r = await api("/api/secrets", { method: "POST", body: JSON.stringify({ secrets }) });
+  $$("[data-secret]").forEach((el) => { el.value = ""; });
+  $("#set-msg").innerHTML = '<div class="banner ok">Saved ' + r.applied.join(", ") + ". " + esc(r.note) +
+    (r.restart_required ? " <b>Restart required.</b>" : "") + "</div>";
+  loadSettings(); loadWarnings();
+};
+
+loadStatus(); loadWarnings(); loadDecisions();
+setInterval(loadStatus, 15000);
+</script>
+</body>
+</html>

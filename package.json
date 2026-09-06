@@ -1,0 +1,43 @@
+{
+  "name": "hivemind-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Autonomous Meteora DLMM liquidity agent with a portfolio risk breaker, self-learning playbook, pull-only swarm intelligence, and a local control panel.",
+  "main": "index.js",
+  "bin": {
+    "hivemind": "cli.js"
+  },
+  "scripts": {
+    "setup": "node setup.js",
+    "env:encrypt": "node scripts/envrypt.js encrypt",
+    "start": "node index.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:restart": "pm2 restart hivemind --update-env",
+    "pm2:logs": "pm2 logs hivemind --lines 100",
+    "dev": "DRY_RUN=true node index.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:syntax": "node -e \"process.exit(0)\"",
+    "test:screen": "node test/test-screening.js",
+    "test:agent": "DRY_RUN=true node test/test-agent.js",
+    "postinstall": "node scripts/patch-anchor.js",
+    "smoke:panel": "node scripts/smoke-panel.mjs"
+  },
+  "knip": {
+    "ignore": [
+      "discord-listener/**"
+    ]
+  },
+  "dependencies": {
+    "@meteora-ag/dlmm": "1.9.4",
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^17.3.1",
+    "jsonrepair": "^3.13.3",
+    "node-cron": "^3.0.3",
+    "openai": "^4.73.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
