@@ -272,7 +272,7 @@ async function loadStatus() {
       "<td>$" + fmt(p.total_value_usd) + "</td><td>$" + fmt(p.unclaimed_fees_usd) + "</td>" +
       "<td>" + (p.in_range ? '<span class="pos">in</span>' : '<span class="neg">out ' + (p.minutes_out_of_range || 0) + "m</span>") + "</td>" +
       "<td>" + (p.age_minutes ?? "—") + "m</td><td>" + fmt(p.fee_per_tvl_24h) + "%</td></tr>";
-  }).join("") : '<tr><td colspan="7" class="muted">no open positions</td></tr>';
+  }).join("") : '<tr><td colspan="7" class="muted">' + emptyPositionsNote(s) + "</td></tr>";
 
   $("#tok-body").innerHTML = (w.tokens || []).map((t) =>
     "<tr><td>" + esc(t.symbol || t.mint?.slice(0, 8)) + "</td><td>" + fmt(t.balance, 4) + "</td><td>$" + fmt(t.usd) + "</td></tr>").join("")
@@ -301,8 +301,11 @@ async function loadDecisions() {
   try {
     const d = await api("/api/decisions");
     const rows = (d.decisions || d || []).slice(0, 12);
+    // A dry_run row is the only trace a simulated deploy leaves, so it gets its own
+    // colour — reading it as a fill is the mistake this whole area exists to prevent.
     $("#decisions").innerHTML = "<tbody>" + (rows.length ? rows.map((x) =>
-      "<tr><td>" + esc(String(x.ts || "").slice(5, 16)) + "</td><td>" + esc(x.type) + "</td><td>" +
+      "<tr><td>" + esc(String(x.ts || "").slice(5, 16)) + '</td><td class="' +
+      (x.type === "dry_run" ? "warnc" : x.type === "deploy" ? "pos" : "") + '">' + esc(x.type) + "</td><td>" +
       esc(x.summary || x.reason || "") + "</td></tr>").join("") : '<tr><td class="muted">no decisions logged</td></tr>') + "</tbody>";
   } catch { $("#decisions").innerHTML = '<tbody><tr><td class="muted">unavailable</td></tr></tbody>'; }
 }
@@ -383,6 +386,15 @@ async function loadCalendar() {
 }
 $("#cal-days").onchange = loadCalendar;
 
+// An empty table with no explanation reads as a broken panel. In a dry run it is the
+// correct and expected state: deployPosition returns before trackPosition, so a
+// simulated deploy leaves no position to show — on purpose, because writing one would
+// put fictional inventory in the same store the live agent reads.
+function emptyPositionsNote(s) {
+  if (!s.dry_run) return "no open positions";
+  return "No open positions. DRY RUN deploys are simulated and deliberately leave no " +
+    "position behind — look under Recent decisions on the Overview tab for what it would have done.";
+}
 // ── swarm ───────────────────────────────────────────────────────
 async function loadSwarm() {
   const d = await api("/api/swarm");

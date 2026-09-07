@@ -586,6 +586,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     let deployAttempted = false;
     let deploySucceeded = false;
+    let dryRunDeploy = null;
     const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
@@ -665,6 +666,7 @@ IMPORTANT:
             deploySucceeded = Boolean(
               success && result?.success !== false && !result?.error && !result?.blocked && !result?.dry_run,
             );
+            if (result?.dry_run) dryRunDeploy = result.would_deploy || {};
           }
           await liveMessage?.toolFinish(name, result, success);
         },
@@ -676,6 +678,24 @@ IMPORTANT:
         type: "no_deploy",
         actor: "SCREENER",
         summary: "LLM chose no deploy",
+        reason: stripThink(content).slice(0, 500),
+      });
+    } else if (dryRunDeploy) {
+      // A simulated deploy is not a failed one. It landed here as
+      // "Deploy attempt did not succeed" — a record that contradicted its own reason
+      // text, which began "🚀 DEPLOYED". Reporting a rehearsal as a failure is the
+      // same class of untrue report as reporting it as a fill, just inverted, and it
+      // is the only trace a dry-run deploy leaves: no position is tracked, by design.
+      //
+      // The drought counter still advances. Nothing was deployed, so a dry run must
+      // not postpone the threshold relaxation that a real deploy drought triggers.
+      noteScreenWithoutDeploy();
+      appendDecision({
+        type: "dry_run",
+        actor: "SCREENER",
+        pool: dryRunDeploy.pool_address || null,
+        pool_name: dryRunDeploy.pool_name || null,
+        summary: "Simulated deploy — DRY RUN, no transaction sent",
         reason: stripThink(content).slice(0, 500),
       });
     } else if (!deploySucceeded) {

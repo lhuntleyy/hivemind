@@ -126,3 +126,36 @@ test("every write tool has a dry-run branch at all", () => {
     assert.match(body, /DRY_RUN/, `${fn} must check DRY_RUN before sending anything`);
   }
 });
+
+test("a simulated deploy is recorded as dry_run, not as a failure", () => {
+  // It used to land in the "Deploy attempt did not succeed" branch — a record that
+  // contradicted its own reason text, which began "🚀 DEPLOYED". Reporting a rehearsal
+  // as a failure is the same untrue report as reporting it as a fill, just inverted,
+  // and it is the ONLY trace a dry-run deploy leaves: no position is tracked, by design.
+  const src = code("index.js");
+  assert.match(src, /if \(result\?\.dry_run\) dryRunDeploy = result\.would_deploy/, "the cycle must capture the simulated deploy");
+
+  const branch = src.split("} else if (dryRunDeploy) {")[1]?.split("} else if")[0] ?? "";
+  assert.ok(branch, "there must be a dedicated dry-run branch");
+  assert.match(branch, /type: "dry_run"/, "it needs its own decision type");
+  assert.match(branch, /noteScreenWithoutDeploy\(\)/,
+    "a dry run must still advance the deploy drought — nothing was deployed, so it must not postpone threshold relaxation");
+
+  // Ordering matters: the dry-run branch has to come BEFORE the !deploySucceeded catch-all,
+  // because deploySucceeded is false for a dry run.
+  const dryIdx = src.indexOf("} else if (dryRunDeploy) {");
+  const failIdx = src.indexOf("} else if (!deploySucceeded) {");
+  assert.ok(dryIdx > -1 && failIdx > dryIdx, "the dry-run branch must precede the failure branch");
+});
+
+test("the panel explains an empty Positions tab in dry run", () => {
+  // deployPosition returns before trackPosition, so a dry run leaves no position — on
+  // purpose, because writing one would put fictional inventory in the same store the
+  // live agent reads. An unexplained empty table just reads as a broken panel.
+  const html = read("web/public/index.html");
+  const script = html.split("<script>")[1]?.split("</script>")[0] ?? "";
+  assert.match(script, /function emptyPositionsNote\(s\)/, "must have a dry-run-aware empty state");
+  assert.match(script, /if \(!s\.dry_run\) return "no open positions"/, "live mode keeps the plain wording");
+  assert.match(script, /simulated and deliberately leave no/, "dry run must say why the table is empty");
+  assert.ok(!/muted">no open positions<\/td>/.test(script), "the hardcoded empty string must be gone");
+});
