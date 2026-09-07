@@ -62,6 +62,9 @@ export function buildEditable(providerIds) {
     "risk.lossNoiseFloorSol":    num(0, 1, "Risk breaker", "Loss noise floor (SOL)", "Closes smaller than this do not advance the loss streak."),
     "risk.relayOverheadSol":     num(0, 5, "Risk breaker", "Relay overhead cap (SOL)", "Max SOL a relay-built deploy may cost beyond the deploy amount."),
 
+    // ── Dry run ─────────────────────────────────────────────────
+    dryRunPaperWalletSol: num(0, 10000, "Dry run", "Paper wallet (SOL)",
+      "Balance the agent sees while DRY_RUN=true, so the deploy path is reachable on an unfunded wallet. 0 = use the real balance."),
     // ── Position sizing ─────────────────────────────────────────
     maxPositions:    num(1, 20, "Position sizing", "Max open LP positions"),
     deployAmountSol: num(0.05, 1000, "Position sizing", "Base deploy (SOL)", "Floor for the compounding formula."),

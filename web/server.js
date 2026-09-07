@@ -348,6 +348,9 @@ async function handleApi(req, res, url) {
       wallet: {
         address: wallet.wallet ?? null,
         sol: wallet.sol ?? 0,
+        // Passed through so the dashboard can never present paper SOL as a real balance.
+        simulated: wallet.simulated === true,
+        real_sol: wallet.real_sol ?? null,
         sol_price: wallet.sol_price ?? 0,
         total_usd: wallet.total_usd ?? 0,
         tokens: (wallet.tokens || []).filter((t) => (t.usd ?? 0) >= 0.5).slice(0, 20),
@@ -420,8 +423,8 @@ async function handleApi(req, res, url) {
   }
 
   if (route === "GET /api/swarm") {
-    const { getStrategyIntel } = await import("../hivemind.js");
-    return json(res, 200, getStrategyIntel());
+    const { getStrategyIntel, getSwarmExitRules } = await import("../hivemind.js");
+    return json(res, 200, { ...getStrategyIntel(), exitRules: getSwarmExitRules() });
   }
 
   if (route === "GET /api/decisions") {
@@ -547,16 +550,17 @@ async function handleApi(req, res, url) {
  * Panel names that differ from config names are aliased explicitly; everything else is
  * found by searching the config tree in a fixed section order.
  */
-const CONFIG_ALIASES = {
+export const CONFIG_ALIASES = {
   screeningSource:  ["screening", "source"],
   llmProvider:      ["llm", "provider"],
   llmBaseUrl:       ["llm", "baseUrl"],
   hiveMindPullMode: ["hiveMind", "pullMode"],
   strategy:         ["strategy", "strategy"],
+  dryRunPaperWalletSol: ["dryRun", "paperWalletSol"],
 };
 
 // Fixed order so a leaf name present in two sections resolves deterministically.
-const CONFIG_SECTION_ORDER = [
+export const CONFIG_SECTION_ORDER = [
   "risk", "management", "screening", "schedule", "llm", "strategy",
   "spot", "venue", "darwin", "gmgn", "hiveMind", "indicators", "web", "pnl", "opportunity",
 ];

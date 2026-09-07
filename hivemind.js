@@ -130,6 +130,75 @@ export function getStrategyIntel() {
   }
 }
 
+/**
+ * Exit rules recovered from other agents' close reasons, with our own settings
+ * alongside. See hive/exit-miner.js — no agent publishes its config, so these are
+ * inferred from lesson text and the sample size travels with every number.
+ */
+export function getSwarmExitRules() {
+  try {
+    return client().getExitRules({
+      stopLossPct: config.management?.stopLossPct,
+      takeProfitPct: config.management?.takeProfitPct,
+    });
+  } catch {
+    return { thresholds: {}, reason_mix: [], samples: 0, agents: 0, comparison: [] };
+  }
+}
+
+export function formatSwarmExitRulesText() {
+  const e = getSwarmExitRules();
+  if (!e.samples) {
+    return "No exit rules recovered yet. They come from close reasons inside FAILED lessons, " +
+      "and the corpus grows one pull at a time — check back after a few sync cycles.";
+  }
+
+  const lines = [
+    `Recovered from ${e.samples} close reason(s) published by ${e.agents} agent(s).`,
+    "These are inferred from lesson text, not published config.",
+    "",
+  ];
+
+  const LABELS = {
+    stop_loss: "Stop loss",
+    take_profit: "Take profit",
+    trailing_tp: "Trailing TP",
+    range_dump: "Max loss below range",
+    range_pump: "Exit above range",
+    drawdown: "Drawdown limit",
+    out_of_range: "Out of range",
+    low_yield: "Low yield",
+    manual: "Manual",
+    other: "Other",
+  };
+
+  const withNumbers = Object.entries(e.thresholds || {});
+  if (withNumbers.length) {
+    lines.push("THRESHOLDS OTHER AGENTS RUN");
+    for (const [cls, t] of withNumbers) {
+      lines.push(
+        `  ${LABELS[cls] || cls}: median ${t.median_pct}%  ` +
+        `(${t.agents} agent${t.agents === 1 ? "" : "s"}, range ${t.min_pct}%…${t.max_pct}%)`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (e.reason_mix?.length) {
+    lines.push("WHY THEY CLOSE");
+    for (const r of e.reason_mix) {
+      lines.push(`  ${(LABELS[r.class] || r.class).padEnd(22)} ${String(r.count).padStart(3)}  (${r.share_pct}%)`);
+    }
+    lines.push("");
+  }
+
+  if (e.comparison?.length) {
+    lines.push("VS YOURS");
+    for (const c of e.comparison) lines.push(`  ${c.note}`);
+  }
+
+  return lines.join("\n");
+}
 export function formatStrategyIntelText() {
   const { intel, pulledAt } = getStrategyIntel();
   if (!intel) return "No swarm data pulled yet. Run /swarm-sync or wait for the next cycle.";

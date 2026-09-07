@@ -22,6 +22,7 @@
 
 import { ingestSwarmLessons } from "./lesson-quality.js";
 import { mineStrategies } from "./strategy-miner.js";
+import { mineExitRules, compareToOwnExits } from "./exit-miner.js";
 import { fenceUntrusted } from "./prompt-armor.js";
 
 const DEFAULTS = {
@@ -32,6 +33,9 @@ const DEFAULTS = {
   maxPromptLessons: 5,
   maxPromptBands: 4,
   minBandObservations: 3,
+  // How many raw lessons to carry forward across pulls. The server hands back ~12 per
+  // call and rotates them, so the corpus is the only place swarm history accumulates.
+  maxCorpus: 600,
   // Push privacy. Default posture: contribute outcome statistics, not position identity.
   share: {
     lessons: true,
@@ -42,6 +46,51 @@ const DEFAULTS = {
   },
 };
 
+/**
+ * Fold a freshly pulled batch into the running corpus, newest first, deduped by id.
+ *
+ * The server returns roughly a dozen lessons per call out of a rotating pool, and the
+ * cache used to be overwritten on every pull — so a 30-minute cadence threw away
+ * everything it had learned 48 times a day and never accumulated a sample worth doing
+ * statistics on. Feature bands, strategy weights and mined exit thresholds are all
+ * counting exercises; none of them mean anything over one batch of twelve.
+ *
+ * Entries are stored RAW and re-sanitised on every ingest. Nothing reads corpus text
+ * without going through ingestSwarmLessons first, so a lesson that was crafted to
+ * carry an injection is still neutralised at use, not merely at write.
+ */
+export function mergeCorpus(existing, incoming, { max = 600, now = Date.now() } = {}) {
+  const out = [];
+  const seen = new Set();
+
+  const push = (entry, firstSeen) => {
+    const id = entry?.id;
+    // An id-less lesson cannot be deduped, and keeping it would let one repeated
+    // anonymous rule accumulate unbounded weight across pulls. Drop it.
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push({ ...entry, _firstSeen: firstSeen ?? now });
+  };
+
+  // A lesson the server re-serves keeps the timestamp it was FIRST seen at. Stamping it
+  // with `now` on every pull would make an entry that has been in the corpus for a week
+  // look brand new, so the cap would evict genuinely newer material to keep re-served
+  // lessons alive — the opposite of what the sort is for.
+  const firstSeenById = new Map();
+  for (const entry of Array.isArray(existing) ? existing : []) {
+    if (entry?.id != null) firstSeenById.set(entry.id, entry._firstSeen);
+  }
+
+  for (const entry of Array.isArray(incoming) ? incoming : []) {
+    push(entry, firstSeenById.get(entry?.id) ?? now);
+  }
+  for (const entry of Array.isArray(existing) ? existing : []) push(entry, entry?._firstSeen);
+
+  // Newest first, so the cap evicts the oldest. Evidence scoring already decays with
+  // age; this only bounds the file.
+  out.sort((a, b) => (b._firstSeen ?? 0) - (a._firstSeen ?? 0));
+  return out.slice(0, max);
+}
 export class HiveClient {
   /**
    * @param {object} opts
@@ -119,10 +168,17 @@ export class HiveClient {
       });
       const raw = Array.isArray(payload?.lessons) ? payload.lessons : [];
 
-      const ingest = ingestSwarmLessons(raw, { now: this.now() });
-      const intel = mineStrategies(raw, { now: this.now() });
-
+      // Accumulate first, then analyse the whole corpus. Analysing only `raw` meant
+      // every band, weight and threshold was computed from a single batch of twelve.
       const cache = this.store.read();
+      const corpus = mergeCorpus(cache.corpus, raw, { max: this.cfg.maxCorpus, now: this.now() });
+
+      const ingest = ingestSwarmLessons(corpus, { now: this.now() });
+      const intel = mineStrategies(corpus, { now: this.now() });
+      const exits = mineExitRules(corpus);
+
+      cache.corpus = corpus;
+      cache.exits = exits;
       cache.lessons = ingest.accepted.map((a) => ({
         id: a.id,
         rule: a.rule,
@@ -147,9 +203,10 @@ export class HiveClient {
 
       this.log(
         "hive",
-        `pull: ${ingest.stats.received} received, ${ingest.stats.accepted} accepted, ` +
+        `pull: ${raw.length} received (corpus ${corpus.length}), ${ingest.stats.accepted} accepted, ` +
         `${ingest.stats.rejected} rejected, ${ingest.bands.length} feature bands, ` +
-        `${intel.unknown_to_us.length} unknown strategy labels`,
+        `${intel.unknown_to_us.length} unknown strategy labels, ` +
+        `${exits.samples} exit reasons from ${exits.agents} agents`,
       );
       return cache;
     } catch (error) {
@@ -221,10 +278,29 @@ export class HiveClient {
     return fenceUntrusted([header, ...lines], { label: "SWARM_EVIDENCE" });
   }
 
+  /**
+   * What the rest of the swarm uses for exits, and how our own settings compare.
+   *
+   * No agent publishes its config. These numbers are recovered from close-reason
+   * strings inside FAILED lessons, so coverage is partial by construction and the
+   * sample size is reported with every line rather than buried.
+   */
+  getExitRules({ stopLossPct, takeProfitPct } = {}) {
+    const cache = this.store.read();
+    const mined = cache.exits || mineExitRules(cache.corpus || []);
+    return { ...mined, comparison: compareToOwnExits(mined, { stopLossPct, takeProfitPct }) };
+  }
   /** Operator-facing view (REPL / Telegram), not for the prompt. */
   getIntel() {
     const cache = this.store.read();
-    return { intel: cache.intel || null, bands: cache.bands || [], stats: cache.stats || null, pulledAt: cache.pulledAt || null };
+    return {
+      intel: cache.intel || null,
+      bands: cache.bands || [],
+      stats: cache.stats || null,
+      exits: cache.exits || null,
+      corpusSize: (cache.corpus || []).length,
+      pulledAt: cache.pulledAt || null,
+    };
   }
 
   // ─── push ─────────────────────────────────────────────────────
@@ -357,7 +433,7 @@ export function countsInWinRate(closeReason) {
 }
 
 export function memoryStore(initial = {}) {
-  let data = { lessons: [], bands: [], intel: null, stats: null, pulledAt: null, ...initial };
+  let data = { lessons: [], bands: [], intel: null, stats: null, corpus: [], exits: null, pulledAt: null, ...initial };
   return {
     read: () => JSON.parse(JSON.stringify(data)),
     write: (next) => { data = JSON.parse(JSON.stringify(next)); },
@@ -365,7 +441,7 @@ export function memoryStore(initial = {}) {
 }
 
 export function fileStore(fs, filePath) {
-  const empty = { lessons: [], bands: [], intel: null, stats: null, pulledAt: null };
+  const empty = { lessons: [], bands: [], intel: null, stats: null, corpus: [], exits: null, pulledAt: null };
   return {
     read() {
       try {

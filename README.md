@@ -35,6 +35,21 @@ npm run dev          # dry run — no on-chain transactions (works on Windows to
 
 Then open **http://127.0.0.1:4141** and fill in your keys under **Settings**. Nothing is written to `.env` until you press Save.
 
+### Paper balance
+
+A dry run uses a **paper SOL balance** so it can reach the deploy path on an unfunded
+wallet. Without it the model reads your real balance, correctly concludes it cannot fund
+a position, and refuses — so the one thing a dry run exists to exercise never runs.
+
+The default is `deployAmountSol × maxPositions + gasReserve`, which makes the simulated
+trade the same size as your first real one. Set `dryRunPaperWalletSol` to `0` to dry-run
+against the real balance instead.
+
+It only ever substitutes the SOL figure, only while `DRY_RUN=true`, and the real balance
+travels alongside it as `real_sol`. The dashboard labels it `(paper)`, and the **risk
+ledger is always fed the real number** — otherwise a rehearsal would record an all-time
+equity peak you never had and trip the drawdown breaker on your first live cycle.
+
 Go live only after you have watched a few dry-run cycles:
 
 ```bash
@@ -150,6 +165,33 @@ are still redacted unless you separately opt into those.
 What arrives is filtered: test records dropped, injection-scanned, ranked by distinct
 agents and consensus rather than the server's `score`, then rendered inside a
 `[[SWARM_EVIDENCE_…]]` fence that the prompt marks as data.
+
+### The corpus
+
+The server hands back ~12 lessons per call from a rotating pool. Those accumulate into a
+deduplicated corpus (600 max) and the whole pipeline — feature bands, strategy weights,
+exit thresholds — runs over the accumulation, not over the latest batch. Meridian
+recomputed everything from each batch of twelve and discarded the rest, 48 times a day.
+
+### Exit rules other agents run
+
+No agent publishes its config, and `/presets/pull` is empty. But a `FAILED` lesson
+carries its close reason verbatim, and the close reason names the threshold that fired:
+
+```
+Reason: Stop loss: PnL -16.05% = -15%.
+Reason: Rule 3: dumped far below range (loss 29% = 25% max).
+Reason: Trailing TP stop loss.
+```
+
+The left number is what their position did; the right one is what they configured.
+`hive/exit-miner.js` recovers the second, one vote per agent (the author comes from the
+lesson id), and the Swarm tab shows the distribution next to your own settings. Run
+`/swarm` in the REPL for the same view.
+
+Coverage is partial by construction and the sample is small, so every number carries its
+agent count. It is intelligence to read, not a threshold to copy — nothing here writes
+config.
 
 The `presets` endpoint returns `[]` upstream, so strategies are not shared through the
 intended channel — but lesson **tags** carry other forks' strategy names

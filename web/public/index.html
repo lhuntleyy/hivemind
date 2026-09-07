@@ -149,6 +149,12 @@
         <button class="act" id="btn-pull">Pull now</button>
         <span class="muted" id="swarm-meta"></span>
       </div>
+      <h3>Exit rules other agents run</h3>
+      <p class="muted">Recovered from close reasons inside their published lessons — no agent shares its config.
+        One vote per agent. Small samples are labelled; nothing here is applied automatically.</p>
+      <table><thead><tr><th>Rule</th><th>Swarm median</th><th>Range</th><th>Agents</th><th>Yours</th></tr></thead>
+        <tbody id="exit-body"></tbody></table>
+      <p class="muted" id="exit-meta"></p>
       <pre id="swarm-out">loading…</pre>
     </div>
     <div class="card" style="margin-top:14px"><h3>Feature bands</h3><div class="scroll">
@@ -223,8 +229,12 @@ async function loadStatus() {
   $("#clock").textContent = new Date(s.timestamp).toLocaleTimeString();
 
   const w = s.wallet || {};
-  $("#w-sol").textContent = fmt(w.sol, 3) + " SOL";
-  $("#w-usd").textContent = w.sol_price ? "$" + fmt(w.sol * w.sol_price) + " · SOL $" + fmt(w.sol_price) : (w.error || "");
+  // In dry run `sol` is a paper balance. Showing it unlabelled next to a real wallet
+  // address is the panel telling the operator they hold money they do not hold.
+  $("#w-sol").textContent = fmt(w.sol, 3) + " SOL" + (w.simulated ? " (paper)" : "");
+  $("#w-usd").textContent = w.simulated
+    ? "simulated — wallet actually holds " + fmt(w.real_sol, 4) + " SOL"
+    : (w.sol_price ? "$" + fmt(w.sol * w.sol_price) + " · SOL $" + fmt(w.sol_price) : (w.error || ""));
 
   const ps = s.positions || [];
   $("#w-pos").textContent = ps.length;
@@ -391,6 +401,23 @@ async function loadSwarm() {
       "\nMarket regimes:" + sec("", i.regimes) +
       "\n" + (i.stats ? i.stats.lessons_considered + " lessons mined. Nothing here is applied automatically." : "");
   }
+  const LABELS = {
+    stop_loss: "Stop loss", take_profit: "Take profit", trailing_tp: "Trailing TP",
+    range_dump: "Max loss below range", range_pump: "Exit above range", drawdown: "Drawdown limit",
+    out_of_range: "Out of range", low_yield: "Low yield", manual: "Manual", other: "Other",
+  };
+  const ex = d.exitRules || {};
+  const ours = {};
+  for (const c of ex.comparison || []) ours[c.key] = c.ours;
+  const rows = Object.entries(ex.thresholds || {});
+  $("#exit-body").innerHTML = rows.length ? rows.map(([k, t]) =>
+    "<tr><td>" + esc(LABELS[k] || k) + "</td><td>" + t.median_pct + "%</td><td>" +
+    t.min_pct + "% to " + t.max_pct + "%</td><td>" + t.agents + "</td><td>" +
+    (ours[k] == null ? "\u2014" : ours[k] + "%") + "</td></tr>").join("")
+    : '<tr><td colspan="5" class="muted">Nothing recovered yet \u2014 the corpus grows one pull at a time.</td></tr>';
+  $("#exit-meta").textContent = ex.samples
+    ? ex.samples + " close reason(s) from " + ex.agents + " agent(s); corpus holds " + (d.corpusSize || 0) + " lessons."
+    : "";
   $("#band-body").innerHTML = (d.bands || []).map((b) =>
     "<tr><td>" + esc(b.key) + "</td><td>" + (b.win_rate * 100).toFixed(0) + "%</td><td>" + b.avg_pnl_pct +
     "%</td><td>" + b.distinct_pools + "</td><td>" + b.observations + "</td></tr>").join("")
@@ -457,15 +484,15 @@ function renderSettingGroups() {
 $("#set-filter").oninput = (e) => {
   const q = e.target.value.trim().toLowerCase();
   let shown = 0;
-  for (const el of $("[data-setting]")) {
+  for (const el of $$("[data-setting]")) {
     const hit = !q || el.dataset.setting.toLowerCase().includes(q) || el.textContent.toLowerCase().includes(q);
     el.hidden = !hit;
     if (hit) shown++;
   }
-  for (const fs2 of $("fieldset[data-group]")) {
-    fs2.hidden = !$("[data-setting]", fs2).some((el) => !el.hidden);
+  for (const fs2 of $$("fieldset[data-group]")) {
+    fs2.hidden = !$$("[data-setting]", fs2).some((el) => !el.hidden);
   }
-  $("#set-count").textContent = shown + " of " + $("[data-setting]").length + " settings";
+  $("#set-count").textContent = shown + " of " + $$("[data-setting]").length + " settings";
 };
 
 // ── LLM provider ────────────────────────────────────────────────
@@ -520,7 +547,28 @@ $("#btn-test-llm").onclick = async () => {
   }
 };
 
-$("#btn-save-llm").onclick = async () => {
+// An unguarded async onclick that throws leaves the button looking inert: the click
+// registers, the handler rejects, and nothing on the page changes. Every save below
+// runs through this so a failure is always visible and the button always re-enables.
+function onAction(sel, resultSel, fn) {
+  const btn = $(sel);
+  if (!btn) return;
+  btn.onclick = async () => {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    try {
+      await fn();
+    } catch (err) {
+      $(resultSel).innerHTML = '<div class="banner warn">Failed: ' + esc(err.message) + "</div>";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  };
+}
+
+onAction("#btn-save-llm", "#llm-result", async () => {
   const key = $("#llm-key").value.trim();
   const provider = $("#llm-provider").value;
   // The key goes to .env under the provider's own env var, so switching provider
@@ -539,24 +587,29 @@ $("#btn-save-llm").onclick = async () => {
     ? '<span class="neg">' + esc(errs.map(([k, v]) => k + ": " + v).join("; ")) + "</span>"
     : '<span class="pos">Saved. Takes effect on the next cycle &mdash; no restart needed.</span>';
   loadSettings(); loadWarnings();
-};
+});
 
-
-$("#btn-save").onclick = async () => {
+onAction("#btn-save", "#set-msg", async () => {
   const values = {};
-  $("[data-key]").forEach((el) => {
+  // $$ (querySelectorAll), not $ — a single-element $ here threw "forEach is not a
+  // function" on every click, which is indistinguishable from a dead button.
+  $$("[data-key]").forEach((el) => {
     if (el.type === "checkbox") values[el.dataset.key] = el.checked;
     else if (el.dataset.csv) values[el.dataset.key] = el.value;
     else values[el.dataset.key] = el.value;
   });
+  if (!Object.keys(values).length) {
+    $("#set-msg").innerHTML = '<div class="banner warn">No settings loaded — open the Settings tab first.</div>';
+    return;
+  }
   const r = await api("/api/settings", { method: "POST", body: JSON.stringify({ values }) });
   const errs = Object.entries(r.errors || {});
   $("#set-msg").innerHTML = '<div class="banner ' + (errs.length ? "warn" : "ok") + '">Saved ' + Object.keys(r.applied).length + " setting(s)." +
     (errs.length ? " Rejected: " + esc(errs.map(([k, v]) => k + " (" + v + ")").join(", ")) : "") + " " + esc(r.note || "") + "</div>";
   loadSettings(); loadWarnings();
-};
+});
 
-$("#btn-secrets").onclick = async () => {
+onAction("#btn-secrets", "#set-msg", async () => {
   const secrets = {};
   $$("[data-secret]").forEach((el) => { if (el.value.trim()) secrets[el.dataset.secret] = el.value.trim(); });
   if (!Object.keys(secrets).length) { $("#set-msg").innerHTML = '<div class="banner warn">Nothing to save.</div>'; return; }
@@ -565,7 +618,7 @@ $("#btn-secrets").onclick = async () => {
   $("#set-msg").innerHTML = '<div class="banner ok">Saved ' + r.applied.join(", ") + ". " + esc(r.note) +
     (r.restart_required ? " <b>Restart required.</b>" : "") + "</div>";
   loadSettings(); loadWarnings();
-};
+});
 
 loadStatus(); loadWarnings(); loadDecisions();
 setInterval(loadStatus, 15000);

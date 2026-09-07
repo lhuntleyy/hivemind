@@ -56,7 +56,10 @@ if (isMain) {
   if (path.resolve(process.cwd()) !== path.resolve(REPO_ROOT)) {
     log("startup_warn", `process.cwd() differs from repo root — use "npm run pm2:start" (not "pm2 start index.js" from another directory)`);
   }
-  log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
+  const paperSol = Number(config.dryRun?.paperWalletSol ?? 0);
+  log("startup", process.env.DRY_RUN === "true"
+    ? `Mode: DRY RUN${paperSol > 0 ? ` — paper wallet ${paperSol} SOL (real balance ignored; no transaction is sent)` : " — using the REAL wallet balance"}`
+    : "Mode: LIVE");
   log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
   ensureAgentId();
   bootstrapHiveMind().catch((error) => log("hivemind_warn", `Bootstrap failed: ${error.message}`));
@@ -424,7 +427,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Reuse pre-fetched balance — no extra RPC call needed
     const currentBalance = preBalance;
     const deployAmount = computeDeployAmount(currentBalance.sol);
-    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
+    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL${currentBalance.simulated ? " PAPER" : ""})`);
 
     // Load active strategy
     const activeStrategy = getActiveStrategy();
@@ -586,7 +589,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const { content } = await agentLoop(`
 SCREENING CYCLE
 ${strategyBlock}
-Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
+Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)}${currentBalance.simulated ? " (SIMULATED paper balance — DRY RUN, treat as spendable)" : ""} | Deploy: ${deployAmount} SOL
 
 PRE-LOADED CANDIDATES (${passing.length} pools):
 ${candidateBlocks.join("\n\n")}
@@ -600,7 +603,7 @@ STEPS:
    For single-side SOL deploys, do not invent upside:
    set amount_y only, keep amount_x = 0, keep bins_above = 0, and let the upper bin stay at the active bin.
 4. Report in this exact format (no tables, no extra sections):
-   🚀 DEPLOYED
+   ${process.env.DRY_RUN === "true" ? "🧪 DRY RUN — WOULD HAVE DEPLOYED (no transaction was sent)" : "🚀 DEPLOYED"}
 
    <pool name>
    <pool address>
@@ -769,7 +772,14 @@ Summarize the current portfolio health, total fees earned, and performance of al
         if (!hasTracked) _lastFlatEquityAt = nowMs;
         try {
           const bal = await getWalletBalances().catch(() => null);
-          if (bal && !bal.error) markPortfolioEquity(bal.sol, result?.positions || [], bal.sol_price || null);
+          // real_sol, not sol: in dry run `sol` is the paper balance, and writing that
+          // into risk-state.json would set an all-time equity peak of 5 SOL on a wallet
+          // holding 0.03. The first live cycle afterwards would read as a ~99% drawdown
+          // and trip the breaker on a portfolio that never lost anything. The ledger is
+          // persistent and shared with live mode, so it only ever sees real money.
+          if (bal && !bal.error) {
+            markPortfolioEquity(bal.real_sol ?? bal.sol, result?.positions || [], bal.sol_price || null);
+          }
         } catch { /* equity reading is best-effort, never blocks exits */ }
       }
 
@@ -1916,6 +1926,8 @@ Commands:
   /learn         Study top LPers from the best current pool and save lessons
   /learn <addr>  Study top LPers from a specific pool address
   /thresholds    Show current screening thresholds + performance stats
+  /swarm         Exit rules (stop loss / take profit) recovered from other agents
+  /swarm sync    Pull from the swarm now
   /evolve        Manually trigger threshold evolution from performance data
   /stop          Shut down
 `);
@@ -2004,6 +2016,19 @@ Commands:
       return;
     }
 
+    if (input === "/swarm" || input.startsWith("/swarm ")) {
+      const arg = input.slice("/swarm".length).trim();
+      const hive = await import("./hivemind.js");
+      if (arg === "sync" || arg === "pull") {
+        console.log("\nPulling from the swarm...");
+        await hive.pullHiveMindLessons().catch((e) => console.log(`  failed: ${e.message}`));
+      }
+      console.log("\n" + hive.formatSwarmExitRulesText());
+      console.log("\n" + hive.formatStrategyIntelText());
+      console.log();
+      rl.prompt();
+      return;
+    }
     if (input === "/thresholds") {
       const s = config.screening;
       console.log("\nCurrent screening thresholds:");

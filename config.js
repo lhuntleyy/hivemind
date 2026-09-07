@@ -156,7 +156,35 @@ function gmgnArray(key, legacyKey, fallback) {
   return fallback;
 }
 
+// Default paper balance for a dry run: enough to fund every position the risk caps
+// allow, plus gas, and nothing more.
+//
+// Derived rather than a round number, because computeDeployAmount scales position size
+// with the wallet. A flat default of 5 SOL made a dry run deploy 1.68 SOL on a wallet
+// that would really deploy the 0.5 floor — so the rehearsal exercised a trade size the
+// operator will never place, against pools screened for a different size of position.
+// This funds exactly maxPositions × deployAmountSol, so the simulated trade matches the
+// first real one and the maxPositions cap is still reachable.
+// toFixed, because 0.3 * 3 + 0.2 is 1.0999999999999999 in IEEE-754 and that figure ends
+// up in the startup banner and on the dashboard.
+const DEFAULT_PAPER_WALLET_SOL = Number(
+  ((Number(u.deployAmountSol ?? 0.5) * Number(u.maxPositions ?? 3)) + Number(u.gasReserve ?? 0.2)).toFixed(4),
+);
+
 export const config = {
+  // ─── Dry run ─────────────────────────────
+  // A dry run that reports "insufficient SOL" has tested nothing. The code guard was
+  // already bypassed under DRY_RUN, but the model still reads the real balance out of
+  // the goal header and get_wallet_balance, and refuses on its own — so the deploy path
+  // was unreachable for anyone whose wallet was not already funded.
+  //
+  // paperWalletSol replaces ONLY the SOL figure, and only while DRY_RUN=true. The real
+  // balance is still carried alongside as real_sol, every consumer is told the number is
+  // simulated, and the risk ledger is fed real_sol so a rehearsal cannot set a fake
+  // all-time equity peak that trips the drawdown breaker on the first live cycle.
+  dryRun: {
+    paperWalletSol: Number(u.dryRunPaperWalletSol ?? DEFAULT_PAPER_WALLET_SOL),
+  },
   // ─── Risk limits ─────────────────────────
   // Per-position caps (inherited from Meridian) AND the portfolio breaker live in one
   // object on purpose: they were briefly split into two `risk:` keys in the same object
@@ -558,6 +586,12 @@ export function reloadScreeningThresholds() {
     if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
     if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
     if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
+    // Reloaded here so a paper-balance change from the panel applies to the next
+    // cycle. Every other setting on this path does; leaving one out is how a control
+    // ends up looking wired while doing nothing until the next restart.
+    if (numericConfig(fresh.dryRunPaperWalletSol) != null) {
+      config.dryRun.paperWalletSol = numericConfig(fresh.dryRunPaperWalletSol);
+    }
     const minBinsBelow = numericConfig(fresh.minBinsBelow) ?? config.strategy.minBinsBelow;
     const maxBinsBelow = numericConfig(fresh.maxBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.maxBinsBelow;
     const defaultBinsBelow = numericConfig(fresh.defaultBinsBelow) ?? numericConfig(fresh.binsBelow) ?? config.strategy.defaultBinsBelow ?? maxBinsBelow;

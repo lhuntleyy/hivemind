@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EDITABLE } from "../web/server.js";
 import { config } from "../config.js";
+import { CONFIG_ALIASES, CONFIG_SECTION_ORDER } from "../web/server.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -52,19 +53,14 @@ function configPathFor(key) {
   // Dotted keys mirror the config tree exactly.
   if (key.includes(".")) return key.split(".");
 
-  // A few panel names differ from their config names.
-  const ALIASES = {
-    screeningSource: ["screening", "source"],
-    llmProvider: ["llm", "provider"],
-    llmBaseUrl: ["llm", "baseUrl"],
-    hiveMindPullMode: ["hiveMind", "pullMode"],
-    strategy: ["strategy", "strategy"],
-  };
-  if (ALIASES[key]) return ALIASES[key];
+  // Panel names that differ from their config names. Imported from the server rather
+  // than copied: a second copy of this table is the same maintenance hazard as the
+  // hand-listed section map this function was written to replace.
+  if (CONFIG_ALIASES[key]) return CONFIG_ALIASES[key];
 
   // Otherwise find the leaf by name, searching the sections in a fixed order so a name
   // that exists in two places resolves deterministically.
-  const ORDER = ["risk", "management", "screening", "schedule", "llm", "strategy", "spot", "venue", "darwin", "gmgn", "hiveMind", "indicators", "web", "pnl", "opportunity"];
+  const ORDER = CONFIG_SECTION_ORDER;
   for (const section of ORDER) {
     if (config[section] && Object.prototype.hasOwnProperty.call(config[section], key)) {
       return [section, key];
@@ -114,7 +110,10 @@ test("every panel setting is read somewhere outside config.js and the panel itse
   const unread = [];
   for (const key of Object.keys(EDITABLE)) {
     if (exempt.has(key)) continue;
-    const leaf = key.includes(".") ? key.split(".").pop() : key;
+    // The leaf is the name the CONFIG carries, which an alias can rename: the panel
+    // calls it dryRunPaperWalletSol, tools/wallet.js reads config.dryRun.paperWalletSol.
+    // Searching for the panel name would report a correctly wired setting as dead.
+    const leaf = (configPathFor(key) ?? [key]).pop();
     // Look for the leaf name used as a property access or object key anywhere.
     const re = new RegExp(`[.\\[\"'\`]${leaf}\\b`);
     if (!re.test(consumerCorpus)) unread.push(key);

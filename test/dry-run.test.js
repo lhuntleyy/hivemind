@@ -103,6 +103,16 @@ test("deployPosition returns before any state is written in dry run", () => {
   }
 });
 
+test("the screening report headline says DRY RUN, not DEPLOYED", () => {
+  // The headline is what reaches Telegram and the console. Every mechanical side effect
+  // is gated, but a model instructed to print "🚀 DEPLOYED" prints it whether or not a
+  // transaction was sent — the same false report, produced one layer up from the guards.
+  const src = code("index.js");
+  const template = src.split("Report in this exact format")[1]?.slice(0, 300) ?? "";
+  assert.match(template, /process\.env\.DRY_RUN === "true"/, "the headline must branch on DRY_RUN");
+  assert.match(template, /WOULD HAVE DEPLOYED/, "a dry run must not be announced as a deploy");
+});
+
 test("every write tool has a dry-run branch at all", () => {
   // A write tool with no DRY_RUN check would send a real transaction during a dry run.
   const src = code("tools/dlmm.js") + code("tools/wallet.js");

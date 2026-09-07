@@ -53,10 +53,48 @@ function getJupiterReferralParams() {
 }
 
 /**
+ * Substitute a simulated SOL balance while DRY_RUN=true.
+ *
+ * Without this a dry run on an unfunded wallet can never reach the deploy path. The
+ * hard code guard in runScreeningCycle was already skipped under DRY_RUN, but the
+ * model reads the balance itself — from the goal header and from get_wallet_balance —
+ * and refuses with "insufficient SOL" before it ever calls deploy_position. So the one
+ * thing a dry run exists to exercise was the one thing it could not reach.
+ *
+ * Only `sol` is replaced, and only in dry run. The on-chain figure stays visible as
+ * `real_sol`, and `simulated: true` travels with the object so no caller, log line or
+ * panel can present paper SOL as funds on hand. Set dryRunPaperWalletSol to 0 to turn
+ * this off and dry-run against the real balance instead.
+ */
+function applyPaperWallet(balances) {
+  if (process.env.DRY_RUN !== "true") return balances;
+  const paper = Number(config.dryRun?.paperWalletSol ?? 0);
+  if (!Number.isFinite(paper) || paper <= 0) return balances;
+
+  const real = Number(balances?.sol) || 0;
+  const price = Number(balances?.sol_price) || 0;
+  return {
+    ...balances,
+    sol: paper,
+    sol_usd: Math.round(paper * price * 100) / 100,
+    real_sol: real,
+    simulated: true,
+    // Surfaced to the model verbatim, so it does not spend a step reasoning about a
+    // balance that jumped, or veto a deploy it was asked to simulate.
+    note: `DRY RUN — paper balance of ${paper} SOL (wallet actually holds ${real.toFixed(4)} SOL). ` +
+      `Treat the paper balance as spendable: this is a simulation and no transaction will be sent.`,
+  };
+}
+
+/** Balances as seen by the whole agent — paper-substituted in dry run. */
+export async function getWalletBalances() {
+  return applyPaperWallet(await fetchWalletBalances());
+}
+/**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
  */
-export async function getWalletBalances() {
+async function fetchWalletBalances() {
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
