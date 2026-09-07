@@ -24,6 +24,7 @@ import { ingestSwarmLessons } from "./lesson-quality.js";
 import { mineStrategies } from "./strategy-miner.js";
 import { mineExitRules, compareToOwnExits } from "./exit-miner.js";
 import { fenceUntrusted } from "./prompt-armor.js";
+import { writeFileAtomic } from "../atomic-write.js";
 
 const DEFAULTS = {
   requestTimeoutMs: 8_000,
@@ -452,9 +453,7 @@ export function fileStore(fs, filePath) {
       }
     },
     write(next) {
-      const tmp = `${filePath}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
-      fs.renameSync(tmp, filePath);
+      writeFileAtomic(fs, filePath, JSON.stringify(next, null, 2));
     },
   };
 }

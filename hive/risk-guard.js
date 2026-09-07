@@ -18,6 +18,7 @@
  */
 
 import fs from "fs";
+import { writeFileAtomic } from "../atomic-write.js";
 import path from "path";
 
 const DEFAULTS = {
@@ -97,11 +98,10 @@ export class RiskGuard {
     state.updated_at = new Date(this.now()).toISOString();
     const dir = path.dirname(this.stateFile);
     if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // Atomic-ish write: a crash mid-write must not leave a truncated ledger that
-    // the next _load() would treat as corrupt-and-halt.
-    const tmp = `${this.stateFile}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, this.stateFile);
+    // A crash mid-write must not leave a truncated ledger that the next _load()
+    // would treat as corrupt-and-halt. writeFileAtomic also retries the rename,
+    // which on Windows fails outright while another process holds the file.
+    writeFileAtomic(fs, this.stateFile, JSON.stringify(state, null, 2));
   }
 
   _today() {
@@ -259,9 +259,18 @@ export class RiskGuard {
   canDeploy() {
     if (!this.cfg.enabled) return { pass: true };
 
-    const state = this._rollDay(this._load());
+    // canDeploy is a READ of the breaker. It used to persist on every call just to
+    // carry a day roll, which put a disk write on the hot path of every deploy check —
+    // and that write is what a transient file lock turned into a dead screening cycle
+    // (EPERM renaming risk-state.json while a second agent process held it). Save only
+    // when something actually changed.
+    const loaded = this._load();
+    const dayBefore = loaded.day;
+    const state = this._rollDay(loaded);
+    const dayRolled = state.day !== dayBefore;
+
     if (!state.halted) {
-      this._save(state);
+      if (dayRolled) this._save(state);
       return { pass: true };
     }
 
@@ -293,7 +302,8 @@ export class RiskGuard {
       return { pass: true };
     }
 
-    this._save(state);
+    // Still halted and nothing changed — refusing a deploy needs no disk write.
+    if (dayRolled) this._save(state);
     return {
       pass: false,
       reason:

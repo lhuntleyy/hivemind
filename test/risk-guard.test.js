@@ -170,3 +170,44 @@ test("non-numeric inputs are ignored rather than corrupting the ledger", () => {
   assert.equal(s.day_realized_pnl_sol, 0);
   assert.equal(s.day_closes, 0);
 });
+
+// ─── canDeploy is a read, not a write ────────────────────────────
+// canDeploy() used to call _save() on every path, so every deploy check hit the disk.
+// That put a file write on the hot path of the safety gate, and a transient Windows
+// file lock (a second agent process holding risk-state.json) turned into:
+//   [ERROR] Agent loop error at step 2: EPERM ... rename 'risk-state.json.tmp'
+//   [CRON_ERROR] Screening cycle failed
+// Fail-closed held — nothing deployed — but a whole cycle died for a write that had
+// nothing to persist.
+
+test("canDeploy does not touch the ledger when nothing changed", () => {
+  const g = guardAt("2026-09-01T10:00:00Z");
+  g.canDeploy();                                    // creates the file
+  const before = fs.readFileSync(g.stateFile, "utf8");
+  const mtime = fs.statSync(g.stateFile).mtimeMs;
+
+  g.advance(60_000);
+  for (let i = 0; i < 5; i++) assert.equal(g.canDeploy().pass, true);
+
+  assert.equal(fs.readFileSync(g.stateFile, "utf8"), before, "repeated checks must not rewrite the ledger");
+  assert.equal(fs.statSync(g.stateFile).mtimeMs, mtime, "the file must not be touched at all");
+});
+
+test("canDeploy still persists the day roll", () => {
+  // The one thing canDeploy legitimately has to write: resetting the daily counters
+  // when the UTC date flips. Skipping this would let yesterday's realized loss keep
+  // blocking deploys today.
+  const g = guardAt("2026-09-01T23:59:00Z");
+  g.canDeploy();
+  g.setTime("2026-09-02T00:01:00Z");
+  g.canDeploy();
+  assert.equal(JSON.parse(fs.readFileSync(g.stateFile, "utf8")).day, "2026-09-02");
+});
+
+test("a halted guard still refuses without writing", () => {
+  const g = guardAt("2026-09-01T10:00:00Z");
+  g.halt("test halt");
+  const before = fs.readFileSync(g.stateFile, "utf8");
+  assert.equal(g.canDeploy().pass, false);
+  assert.equal(fs.readFileSync(g.stateFile, "utf8"), before, "refusing a deploy needs no disk write");
+});
