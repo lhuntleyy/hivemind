@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+import { reapplyCliEnvLocks } from "./boot-flags.js";
 import { repoPath } from "./repo-root.js";
 
 const DEFAULT_ENV_PATH = repoPath(".env");
@@ -70,6 +71,12 @@ export function envryptDecrypt(value, key) {
 export function loadEnv({ envPath = DEFAULT_ENV_PATH, keyPath = DEFAULT_KEY_PATH, override = true } = {}) {
   // override=true so repo .env wins over stale PM2-injected env on restart
   dotenv.config({ path: envPath, override, quiet: true });
+
+  // ...but a file on disk must never overrule a flag the operator just typed.
+  // With override=true, `npm run dev` on a box whose .env says DRY_RUN=false — which
+  // is exactly what the VPS 'going live' step writes — would send REAL transactions
+  // during a run the operator asked to be a simulation. See boot-flags.js.
+  reapplyCliEnvLocks();
 
   const encryptedKeys = parseEncryptedKeys(envPath);
   if (encryptedKeys.size === 0) return { encryptedKeys: [] };

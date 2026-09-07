@@ -1,7 +1,7 @@
 // MUST stay the first import: it resolves --dry-run into process.env before config.js
 // (or anything else) reads it. See boot-flags.js for why a plain statement here would
 // not work — ESM hoists imports above top-level statements.
-import "./boot-flags.js";
+import { DRY_RUN_SOURCE } from "./boot-flags.js";
 import "./envcrypt.js";
 import cron from "node-cron";
 import readline from "readline";
@@ -57,9 +57,11 @@ if (isMain) {
     log("startup_warn", `process.cwd() differs from repo root — use "npm run pm2:start" (not "pm2 start index.js" from another directory)`);
   }
   const paperSol = Number(config.dryRun?.paperWalletSol ?? 0);
+  // The source is named because .env and the CLI flag can disagree, and the operator
+  // needs to see which one won before the first cycle spends anything.
   log("startup", process.env.DRY_RUN === "true"
-    ? `Mode: DRY RUN${paperSol > 0 ? ` — paper wallet ${paperSol} SOL (real balance ignored; no transaction is sent)` : " — using the REAL wallet balance"}`
-    : "Mode: LIVE");
+    ? `Mode: DRY RUN (from ${DRY_RUN_SOURCE})${paperSol > 0 ? ` — paper wallet ${paperSol} SOL (real balance ignored; no transaction is sent)` : " — using the REAL wallet balance"}`
+    : `Mode: *** LIVE *** (from ${DRY_RUN_SOURCE}) — transactions are real`);
   log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
   ensureAgentId();
   bootstrapHiveMind().catch((error) => log("hivemind_warn", `Bootstrap failed: ${error.message}`));

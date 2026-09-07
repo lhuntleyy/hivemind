@@ -85,7 +85,10 @@ test("applyPaperWallet leaves live mode byte-identical", async () => {
 
 test("the paper balance is labelled where a human and the model can see it", () => {
   const idx = code("index.js");
-  assert.match(idx, /Mode: DRY RUN\$\{paperSol > 0 \?/, "the startup banner must name the paper balance");
+  // Not pinned to the full banner string — test/mode-precedence.test.js owns the
+  // "(from <source>)" half. This only asserts the paper balance is stated.
+  assert.match(idx, /Mode: DRY RUN[^\n\r]*paper wallet \$\{paperSol\} SOL/,
+    "the startup banner must name the paper balance");
   assert.match(
     idx,
     /currentBalance\.simulated \? " \(SIMULATED paper balance/,

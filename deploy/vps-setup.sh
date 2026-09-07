@@ -83,6 +83,16 @@ fi
 if [[ ! -f "$INSTALL_DIR/.env" ]]; then
   log "Creating an empty .env (0600) — fill it via the control panel"
   $SUDO -u "$RUN_USER" bash -c "printf 'DRY_RUN=true\n' > '$INSTALL_DIR/.env'"
+elif ! $SUDO grep -qE '^\s*DRY_RUN=' "$INSTALL_DIR/.env"; then
+  # An .env that already existed — copied from another box, or left by an earlier run —
+  # may carry no DRY_RUN line at all. The systemd unit passes no flags, so the mode comes
+  # entirely from this file: with the key absent, DRY_RUN is unset and the agent would
+  # start LIVE on a box this script has just told the operator is in dry run.
+  #
+  # Only ever ADD the line. An existing DRY_RUN=false is the operator's decision and is
+  # left alone.
+  log "Existing .env has no DRY_RUN line — appending DRY_RUN=true so the first start is safe"
+  $SUDO -u "$RUN_USER" bash -c "printf '\nDRY_RUN=true\n' >> '$INSTALL_DIR/.env'"
 fi
 # The wallet key lives here. Nobody but the service user reads it.
 $SUDO chmod 600 "$INSTALL_DIR/.env"

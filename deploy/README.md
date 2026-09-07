@@ -42,6 +42,62 @@ The agent starts in `DRY_RUN=true`. It will run full cycles and make zero transa
 
 ---
 
+## Dry run vs live
+
+The systemd unit runs `node index.js` with **no flags**, so the mode comes from `.env`.
+`vps-setup.sh` writes `DRY_RUN=true`, which is why a fresh box is safe.
+
+Precedence, most authoritative first:
+
+| Source | Example | Beats |
+|---|---|---|
+| CLI flag | `node index.js --dry-run` | everything |
+| `.env` | `DRY_RUN=true` | inherited env |
+| inherited env | whatever systemd or PM2 leaked in | — |
+
+**Always confirm from the log rather than assuming.** The first lines name the mode and
+where it came from:
+
+```bash
+sudo journalctl -u hivemind -n 50 | grep Mode:
+```
+
+```
+[STARTUP] Mode: DRY RUN (from DRY_RUN in .env) — paper wallet 1.1 SOL (real balance ignored; no transaction is sent)
+```
+
+If it ever reads `Mode: *** LIVE ***` when you did not intend that, stop the unit before
+anything else:
+
+```bash
+sudo systemctl stop hivemind
+```
+
+### Paper balance
+
+A dry run substitutes a paper SOL balance so it can reach the deploy path on an unfunded
+wallet — otherwise the model reads the real balance, correctly refuses to fund a
+position, and the run tests nothing. The real figure is still shown, the dashboard
+labels it `(paper)`, and the risk ledger is always fed the real number.
+
+A dry-run deploy leaves **no position**, by design: writing one would put fictional
+inventory in the same `state.json` the live agent reads. Look for it under
+**Recent decisions** (type `dry_run`) instead of on the Positions tab.
+
+### A one-off dry run while the unit is live
+
+The flag beats `.env`, so this is safe even on a box configured for live trading — but
+stop the service first, or two processes will fight over the same JSON state files:
+
+```bash
+sudo systemctl stop hivemind
+sudo -u hivemind node /opt/hivemind/index.js --dry-run
+# Ctrl-C when done, then:
+sudo systemctl start hivemind
+```
+
+---
+
 ## Before you go live
 
 Harden SSH first — a box holding a hot wallet should not accept passwords:
@@ -73,7 +129,11 @@ agent and fix `web.host` before doing anything else.
 ```bash
 sudo -u hivemind sed -i 's/^DRY_RUN=true/DRY_RUN=false/' /opt/hivemind/.env
 sudo systemctl restart hivemind
+sudo journalctl -u hivemind -n 30 | grep Mode:      # confirm it actually flipped
 ```
+
+Note what that `sed` leaves behind: `DRY_RUN=false` stays in `.env` permanently. Any
+later run with no flag is live. Use `--dry-run` explicitly when you want a rehearsal.
 
 Start with a small wallet. The risk breaker limits how fast you can lose it, not
 whether you can.
